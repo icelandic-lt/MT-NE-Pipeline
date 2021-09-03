@@ -1,5 +1,4 @@
 import argparse
-import logging
 import sys
 from dataclasses import dataclass
 from typing import Generator, Iterable, List, Tuple
@@ -7,14 +6,12 @@ from typing import Generator, Iterable, List, Tuple
 import spacy
 import torch
 import tqdm
+from flair.data import Sentence
+from flair.models import SequenceTagger
 from spacy.gold import biluo_tags_from_offsets
-from tokenizer import correct_spaces, split_into_sentences
+from tokenizer import correct_spaces
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 
-from greynirseq.nicenlp.models.multiclass import MultiClassRobertaModel
-from greynirseq.settings import IceBERT_NER_CONFIG, IceBERT_NER_PATH
-
-log = logging.getLogger(__name__)
 NER_RESULTS = Generator[Tuple[List[str], List[str], str], None, None]
 
 
@@ -27,42 +24,27 @@ class NERTag:
     end_idx: int
 
 
-def icelandic_ner(lines_in: Iterable[str], device: str, batch_size=1) -> NER_RESULTS:
-    """NER tags a given collection sentences.
+class EN_NER:
+    def __init__(self, device):
+        self.model = SequenceTagger.load("flair/ner-english-large")
+        self.model.to(device)
+        self.model.eval()
 
-    Args:
-        lines_in: The sentences should be given as a string, tokenized and joined by ' ' as the model expects.
+    def __call__(self, batch: Iterable[str]) -> List[List[NERTag]]:
+        sentences = [Sentence(sent) for sent in batch]
+        self.model.predict(sentences, mini_batch_size=32)
+        # iterate over entities and print
+        sentences_dict = map(lambda s: s.to_dict(tag_type="ner"), sentences)
+        # {'text': 'George Washington went to Washington.',
+        # 'entities': [
+        #     {'text': 'George Washington', 'start_pos': 0, 'end_pos': 17, 'type': 'PER', 'confidence': 0.999},
+        #     {'text': 'Washington', 'start_pos': 26, 'end_pos': 36, 'type': 'LOC', 'confidence': 0.998}
+        # ]}
 
-    Returns:
-        An iterable of a list of tokens, labels and a string representing the model used to NER tagging.
-    """
-    def tokens_
-
-    model = MultiClassRobertaModel.from_pretrained(IceBERT_NER_PATH, **IceBERT_NER_CONFIG)
-    model.to(device)
-    model.eval()
-
-    tokenized_sents = list(lines_in)
-    for ndx in range(0, len(tokenized_sents), batch_size):
-        batch = tokenized_sents[ndx : min(ndx + batch_size, len(tokenized_sents))]
-        # Todo, update for batching when predict_pos fixed
-        batch_labels = model.predict_labels(batch)  # type: ignore
-        for to_model, labels in zip(batch, batch_labels):
-            toks = to_model.split(" ")
-            assert len(labels) == len(
-                toks
-            ), f"We expect the tokens to be of equal length to the labels: {len(toks)}, {len(labels)}, {toks}, {labels}"
-            yield toks, labels, "is"
-
-
-def icelandic_tok(lines_in: Iterable[str]) -> Iterable[str]:
-    """Tokenizes Icelandic sentences. Can be split on spaces; " " to retrieve tokens."""
-    for idx, line in enumerate(lines_in):
-        line = line.strip()
-        if not line:
-            log.warning(f"Found empty line at index={idx}")
-            continue
-        yield " ".join(list(split_into_sentences(line)))
+        return [
+            [NERTag(entity["type"], entity["start_pos"], entity["end_pos"]) for entity in sent["entities"]]
+            for sent in sentences_dict
+        ]
 
 
 def english_ner(lines_in: Iterable[str], device: str) -> List[List[NERTag]]:
@@ -174,7 +156,6 @@ def detok(lines_iter: Iterable[str]) -> Iterable[str]:
 
 
 def main():
-    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("--language", choices=["is", "en"])
     parser.add_argument("--input", nargs="?", type=argparse.FileType("r"), default=sys.stdin)
@@ -190,7 +171,3 @@ def main():
     tagged_iter = ner(lang=args.language, lines_iter=tqdm.tqdm(toks), device=args.device)
     for tokens, labels, using in tagged_iter:
         f_out.write(f"{' '.join(tokens)}\t{' '.join(labels)}\t{using}\n")
-
-
-if __name__ == "__main__":
-    main()
