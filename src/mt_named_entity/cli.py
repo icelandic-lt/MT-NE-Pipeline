@@ -3,7 +3,8 @@ import logging
 import click
 from tqdm import tqdm
 
-from mt_named_entity.ner import EN_NER
+from mt_named_entity.embed import embed_ner_tags
+from mt_named_entity.ner import EN_NER, NERTag
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,30 @@ def ner(inp, out, lang, device, batch_size, idx_file):
     if idx_file:
         idx_file.close()
     log.info(f"NER tagging done")
+
+
+@cli.command()
+@click.argument("original", type=click.File("r"))
+@click.argument("ner_entities", type=click.File("r"))
+@click.argument("ner_idxs", type=click.File("r"))
+@click.argument("output", type=click.File("w"))
+def embed(original, ner_entities, ner_idxs, output):
+    """Embed the NER markers, based on the idxs, into the original text."""
+    log.info(f"Embedding")
+    logging.basicConfig(level=logging.INFO)
+    ner_entities = tqdm(ner_entities)
+    ner_idxs = tqdm(ner_idxs)
+    original = tqdm(original)
+
+    for sent_ner_tag, sent_ner_idx, sent_original in zip(ner_entities, ner_idxs, original):
+        sent_ner_tags = sent_ner_tag.strip().split()
+        sent_ner_idxs = sent_ner_idx.strip().split()
+        sent_ner_idxs_tuples =  [tuple(map(int, idx.split(":"))) for idx in sent_ner_idxs] 
+        sent = sent_original.strip()
+        ner_tags = [NERTag(ner_tag, start_idx=start, end_idx=end) for ner_tag, (start, end) in zip(sent_ner_tags, sent_ner_idxs_tuples)]
+        sent_embed = embed_ner_tags(sent, ner_tags)
+        output.write(sent_embed + "\n")
+    log.info(f"Embedding done")
 
 if __name__ == "__main__":
     cli()
