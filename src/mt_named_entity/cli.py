@@ -16,8 +16,9 @@ def cli():
 @click.argument("out", type=click.File("w"))
 @click.option("--lang", type=click.Choice(["en", "is"]), default="is")
 @click.option("--device", type=str, default="cpu")
+@click.option("--batch_size", type=int, default=64)
 @click.option("--idx_file", type=str, default=None)
-def ner(inp, out, lang, device, idx_file):
+def ner(inp, out, lang, device, batch_size, idx_file):
     """A command to NER tag input from stdin and write to stdout.
     Input has a sentence in each line.
     The output has a sentence in each line, with tokens separated with whitespace a tab char and NER tags separated with whitespace.
@@ -29,7 +30,7 @@ def ner(inp, out, lang, device, idx_file):
 
     if idx_file:
         idx_file = open(idx_file, "w")
-    for sent_ner_tag in ner(inp):
+    for sent_ner_tag in ner(inp, batch_size=batch_size):
         out.write(" ".join([tag.tag for tag in sent_ner_tag]) + "\n")
         if idx_file:
             idx_file.write(" ".join([f"{tag.start_idx}:{tag.end_idx}" for tag in sent_ner_tag]) + "\n")

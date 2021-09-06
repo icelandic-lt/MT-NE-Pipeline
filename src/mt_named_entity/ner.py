@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 from dataclasses import dataclass
 from typing import Generator, Iterable, List, Tuple
@@ -13,6 +14,7 @@ from tokenizer import correct_spaces
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 
 NER_RESULTS = Generator[Tuple[List[str], List[str], str], None, None]
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,19 +32,16 @@ class EN_NER:
         self.model.to(device)
         self.model.eval()
 
-    def __call__(self, batch: Iterable[str]) -> List[List[NERTag]]:
+    def __call__(self, batch: Iterable[str], batch_size) -> List[List[NERTag]]:
         sentences = [Sentence(sent) for sent in batch]
-        self.model.predict(sentences, mini_batch_size=32)
-        # iterate over entities and print
-        sentences_dict = map(lambda s: s.to_dict(tag_type="ner"), sentences)
-        # {'text': 'George Washington went to Washington.',
-        # 'entities': [
-        #     {'text': 'George Washington', 'start_pos': 0, 'end_pos': 17, 'type': 'PER', 'confidence': 0.999},
-        #     {'text': 'Washington', 'start_pos': 26, 'end_pos': 36, 'type': 'LOC', 'confidence': 0.998}
-        # ]}
-
+        self.model.predict(sentences, mini_batch_size=batch_size)
+        sentences_dict = list(map(lambda s: s.to_dict(tag_type="ner"), sentences))
+        for sent in sentences_dict:
+            for entity in sent["entities"]:
+                if len(entity["labels"]) > 1:
+                    log.error(f"Found two labels, be sure that they are in decreasing order:{entity['labels']}")
         return [
-            [NERTag(entity["type"], entity["start_pos"], entity["end_pos"]) for entity in sent["entities"]]
+            [NERTag(entity["labels"][0].value, entity["start_pos"], entity["end_pos"]) for entity in sent["entities"]]
             for sent in sentences_dict
         ]
 
