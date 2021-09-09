@@ -3,7 +3,7 @@ import logging
 import click
 from tqdm import tqdm
 
-from mt_named_entity.embed import embed_ner_tags
+from mt_named_entity.embed import embed_ner_tags, extract_ner_tags
 from mt_named_entity.ner import EN_NER, NERTag
 
 log = logging.getLogger(__name__)
@@ -63,5 +63,29 @@ def embed(original, ner_entities, ner_idxs, output):
         output.write(sent_embed + "\n")
     log.info(f"Embedding done")
 
+@cli.command()
+@click.argument("embedded_text", type=click.File("r"))
+@click.argument("ner_entities", type=click.File("w"))
+@click.argument("ner_idxs", type=click.File("w"))
+@click.argument("clean_text", type=click.File("w"))
+def extract_embeds(embedded_text, ner_entities, ner_idxs, clean_text):
+    """Extract embedded entities and write them out."""
+    log.info(f"Removing embeddings")
+    logging.basicConfig(level=logging.INFO)
+    embedded_text = tqdm(embedded_text)
+    for line in embedded_text:
+        try:
+            clean_line, ner_tags = extract_ner_tags(line.strip())
+        except ValueError as e:
+            log.exception(e)
+            clean_text.write(line)
+            ner_entities.write("\n")
+            ner_idxs.write("\n")
+            continue
+        clean_text.write(clean_line + "\n")
+        ner_entities.write(" ".join([tag.tag for tag in ner_tags]) + "\n")
+        ner_idxs.write(" ".join([f"{tag.start_idx}:{tag.end_idx}" for tag in ner_tags]) + "\n")
+
+    log.info(f"Removal done")
 if __name__ == "__main__":
     cli()
