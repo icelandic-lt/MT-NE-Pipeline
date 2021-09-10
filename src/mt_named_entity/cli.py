@@ -3,14 +3,15 @@ import logging
 import click
 from tqdm import tqdm
 
+import mt_named_entity.filter as filter
 from mt_named_entity.embed import embed_ner_tags, extract_ner_tags
-from mt_named_entity.ner import EN_NER, NERTag
+from mt_named_entity.ner import EN_NER, IS_NER, NERTag
 
 log = logging.getLogger(__name__)
 
 @click.group()
 def cli():
-    pass
+    logging.basicConfig(level=logging.INFO)
 
 @cli.command()
 @click.argument("inp", type=click.File("r"))
@@ -18,60 +19,46 @@ def cli():
 @click.option("--lang", type=click.Choice(["en", "is"]), default="is")
 @click.option("--device", type=str, default="cpu")
 @click.option("--batch_size", type=int, default=64)
-@click.option("--idx_file", type=str, default=None)
-def ner(inp, out, lang, device, batch_size, idx_file):
-    """A command to NER tag input from stdin and write to stdout.
-    Input has a sentence in each line.
-    The output has a sentence in each line, with tokens separated with whitespace a tab char and NER tags separated with whitespace.
-    Maintains empty lines."""
+def ner(inp, out, lang, device, batch_size):
+    """A command to NER tag input file and write to output file.
+    Input has a sentence in each line, not tokenized.
+    The output has the string representation of all NERTags found in the corresponding sentence, separated by a space.
+    The output maintains empty lines."""
     log.info(f"NER tagging")
-    logging.basicConfig(level=logging.INFO)
-    ner = EN_NER(device)
     inp = tqdm(inp)
-
-    if idx_file:
-        idx_file = open(idx_file, "w")
-    for sent_ner_tag in ner(inp, batch_size=batch_size):
-        out.write(" ".join([tag.tag for tag in sent_ner_tag]) + "\n")
-        if idx_file:
-            idx_file.write(" ".join([f"{tag.start_idx}:{tag.end_idx}" for tag in sent_ner_tag]) + "\n")
-    if idx_file:
-        idx_file.close()
+    if lang == "en":
+        ner = EN_NER(device, batch_size)
+    else:
+        ner = IS_NER(device, batch_size)
+    for sent_ner_tag in ner(inp):
+        out.write(" ".join([str(tag) for tag in sent_ner_tag]) + "\n")
     log.info(f"NER tagging done")
 
 
 @cli.command()
 @click.argument("original", type=click.File("r"))
 @click.argument("ner_entities", type=click.File("r"))
-@click.argument("ner_idxs", type=click.File("r"))
 @click.argument("output", type=click.File("w"))
-def embed(original, ner_entities, ner_idxs, output):
-    """Embed the NER markers, based on the idxs, into the original text."""
+def embed(original, ner_entities, output):
+    """Embed the NER markers into the original text."""
     log.info(f"Embedding")
-    logging.basicConfig(level=logging.INFO)
-    ner_entities = tqdm(ner_entities)
-    ner_idxs = tqdm(ner_idxs)
     original = tqdm(original)
 
-    for sent_ner_tag, sent_ner_idx, sent_original in zip(ner_entities, ner_idxs, original):
-        sent_ner_tags = sent_ner_tag.strip().split()
-        sent_ner_idxs = sent_ner_idx.strip().split()
-        sent_ner_idxs_tuples =  [tuple(map(int, idx.split(":"))) for idx in sent_ner_idxs] 
+    for sent_ner_tag, sent_original in zip(ner_entities, original):
+        sent_ner_tags_str = sent_ner_tag.strip().split()
+        sent_ner_tags = [NERTag.from_str(tag) for tag in sent_ner_tags_str]
         sent = sent_original.strip()
-        ner_tags = [NERTag(ner_tag, start_idx=start, end_idx=end) for ner_tag, (start, end) in zip(sent_ner_tags, sent_ner_idxs_tuples)]
-        sent_embed = embed_ner_tags(sent, ner_tags)
+        sent_embed = embed_ner_tags(sent, sent_ner_tags)
         output.write(sent_embed + "\n")
     log.info(f"Embedding done")
 
 @cli.command()
 @click.argument("embedded_text", type=click.File("r"))
 @click.argument("ner_entities", type=click.File("w"))
-@click.argument("ner_idxs", type=click.File("w"))
 @click.argument("clean_text", type=click.File("w"))
-def extract_embeds(embedded_text, ner_entities, ner_idxs, clean_text):
+def extract_embeds(embedded_text, ner_entities, clean_text):
     """Extract embedded entities and write them out."""
     log.info(f"Removing embeddings")
-    logging.basicConfig(level=logging.INFO)
     embedded_text = tqdm(embedded_text)
     for line in embedded_text:
         try:
@@ -80,12 +67,45 @@ def extract_embeds(embedded_text, ner_entities, ner_idxs, clean_text):
             log.exception(e)
             clean_text.write(line)
             ner_entities.write("\n")
-            ner_idxs.write("\n")
             continue
         clean_text.write(clean_line + "\n")
-        ner_entities.write(" ".join([tag.tag for tag in ner_tags]) + "\n")
-        ner_idxs.write(" ".join([f"{tag.start_idx}:{tag.end_idx}" for tag in ner_tags]) + "\n")
+        ner_entities.write(" ".join([str(tag) for tag in ner_tags]) + "\n")
 
     log.info(f"Removal done")
+
+@cli.command()
+@click.argument("src_text", type=click.File("r"))
+@click.argument("tgt_text", type=click.File("r"))
+@click.argument("src_entities", type=click.File("r"))
+@click.argument("tgt_entities", type=click.File("r"))
+@click.argument("src_text_out", type=click.File("w"))
+@click.argument("tgt_text_out", type=click.File("w"))
+@click.argument("src_entities_out", type=click.File("w"))
+@click.argument("tgt_entities_out", type=click.File("w"))
+def filter_text_by_ner(src_text, tgt_text, src_entities, tgt_entities, src_text_out, tgt_text_out, src_entities_out, tgt_entities_out):
+    """Filter the src and tgt based on the provided NER entities. Empty lines are not written out."""
+    log.info(f"Filtering")
+    src_text = tqdm(src_text)
+    for sent_src_text, sent_tgt_text, sent_src_entities, sent_tgt_entities in zip(src_text, tgt_text, src_entities, tgt_entities):
+        sent_src_entities = [NERTag.from_str(a_str) for a_str in sent_src_entities.strip().split(" ") if a_str != ""]
+        sent_tgt_entities = [NERTag.from_str(a_str) for a_str in sent_tgt_entities.strip().split(" ") if a_str != ""]
+        if not sent_src_entities or not sent_tgt_entities:
+            continue
+        sent_entities = [sent_src_entities, sent_tgt_entities]
+        # We map the named entities to a unified format, so that we can use the same filter function.
+        sent_entities = [filter.map_named_entity_types(entities) for entities in sent_entities]
+        # We filter out named entities we are not interested in.
+        sent_entities = [filter.filter_named_entity_types(entities) for entities in sent_entities]
+        # We then filter out sentences which do not have the same number of entity types.
+        if not filter.filter_same_number_of_entity_types(*sent_entities):
+            continue
+
+        # The newline is still present. 
+        src_text_out.write(sent_src_text)
+        tgt_text_out.write(sent_tgt_text)
+        src_entities_out.write(" ".join([str(tag) for tag in sent_src_entities]) + "\n")
+        tgt_entities_out.write(" ".join([str(tag) for tag in sent_tgt_entities]) + "\n")
+    log.info(f"Filtering done")
+
 if __name__ == "__main__":
     cli()

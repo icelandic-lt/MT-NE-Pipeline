@@ -32,8 +32,8 @@ transformers = "^4.3.2"
 spacy = "^2"
 pyjarowinkler = "^1.8"
 scipy = "^1.5"
-greynirseq = {git = "https://github.com/mideind/greynirseq.git", rev = "main"}
 flair = "^0.9"
+greynirseq = {git = "https://github.com/mideind/greynirseq.git", rev = "main"}
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.0.1"

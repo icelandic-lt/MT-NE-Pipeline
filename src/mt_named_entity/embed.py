@@ -53,8 +53,8 @@ SP_TAGS = {
 }
 TAG_MAPPER = {**IS_TAGS, **HF_TAGS, **SP_TAGS}
 
-ENTITY_MARKERS_START = re.compile(f"<[{'|'.join(TAGS)}]+>")
-ENTITY_MARKERS_END = re.compile(f"</[{'|'.join(TAGS)}]+>")
+ENTITY_MARKERS_START = re.compile(f"_[{'|'.join(TAGS)}]+_")
+ENTITY_MARKERS_END = re.compile(f"_/[{'|'.join(TAGS)}]+_")
 
 ENTITY_MARKERS = re.compile(f"</?[{'|'.join(TAGS)}]+>")
 
@@ -64,7 +64,7 @@ def embed_ner_tags(sentence: str, ner_tags: List[NERTag]) -> str:
     for ner_tag in ner_tags:
         entity = sentence[ner_tag.start_idx : ner_tag.end_idx]
         embedded_tag = TAG_MAPPER[ner_tag.tag]
-        embedded_entity = f"<{embedded_tag}>{entity}</{embedded_tag}>"
+        embedded_entity = f"_{embedded_tag}_{entity}_/{embedded_tag}_"
         sentence = sentence[: ner_tag.start_idx] + embedded_entity + sentence[ner_tag.end_idx :]
     return sentence
 
