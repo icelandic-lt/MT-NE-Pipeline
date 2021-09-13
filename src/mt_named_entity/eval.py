@@ -1,4 +1,3 @@
-import argparse
 import logging
 from collections import Counter
 from dataclasses import dataclass
@@ -6,8 +5,6 @@ from itertools import chain
 from typing import Dict, Iterable, List, Tuple
 
 import sacrebleu
-from tqdm import tqdm
-
 from greynirseq.ner.aligner import NULL_TAG, get_min_hun_distance
 from greynirseq.ner.ner_extracter import (
     ENTITY_MARKERS,
@@ -18,6 +15,7 @@ from greynirseq.ner.ner_extracter import (
     parse_line,
 )
 from greynirseq.ner.nertagger import ner, tok
+from tqdm import tqdm
 
 log = logging.getLogger(__name__)
 
@@ -160,69 +158,3 @@ def get_metrics(alignments: List[List[NERAlignment]], upper_bound_ner_alignments
         "Accuracy (exact match)": accuracy,
     }
 
-
-def main():
-    logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ref")
-    parser.add_argument("--ref-contains-entities", action="store_true", default=False)
-    parser.add_argument("--sys")
-    parser.add_argument("--sys-contains-entities", action="store_true", default=False)
-    parser.add_argument("--device", help="The device to use for NER tagging (if needed)", default="cuda")
-    parser.add_argument("--output_dir", help="The folder to write the outputs to.")
-    parser.add_argument("--tgt_lang", choices=["is", "en"])
-    args = parser.parse_args()
-    with open(args.ref) as f_ref, open(args.sys) as f_sys:
-        log.info("Reading files")
-        ref = f_ref.readlines()
-        sys = f_sys.readlines()
-    ref_markers = None
-    sys_markers = None
-    if args.ref_contains_entities:
-        log.info("Reading markers from REF")
-        ref_markers, ref_clean = get_gold_and_clean(ref)
-    else:
-        log.info("NER tagging REF")
-        ref_clean = ref
-        ref_markers = get_markers(lang=args.tgt_lang, lines_iter=tqdm(ref_clean), device=args.device)
-    if args.sys_contains_entities:
-        log.info("Reading markers from SYS")
-        sys_markers, sys_clean = get_gold_and_clean(sys)
-    else:
-        log.info("NER tagging SYS")
-        sys_clean = sys
-        sys_markers = get_markers(lang=args.tgt_lang, lines_iter=tqdm(sys_clean), device=args.device)
-
-    log.info(f"BLEU score: {sacrebleu.corpus_bleu(sys_stream=sys_clean, ref_streams=[ref_clean])}")
-    log.info(f"Ref NER markers: {get_markers_stats(ref_markers)}")
-    log.info(f"Sys NER markers: {get_markers_stats(sys_markers)}")
-    alignments = [align_markers(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_markers, sys_markers)]
-    if alignments:
-        upper_bound_ner_alignments = min(
-            sum(len(markers) for markers in ref_markers), sum(len(markers) for markers in sys_markers)
-        )
-        log.info("Metrics over all types:")
-        for metric, value in get_metrics(alignments, upper_bound_ner_alignments).items():
-            log.info(f"\t{metric}: {value:.3f}")
-        groups = {marker.tag for markers in chain(ref_markers, sys_markers) for marker in markers}
-        for group in groups:
-            upper_bound_ner_alignments = min(
-                sum(1 for markers in ref_markers for marker in markers if marker.tag == group),
-                sum(1 for markers in sys_markers for marker in markers if marker.tag == group),
-            )
-            if upper_bound_ner_alignments:
-                # Refs are marker_1
-                group_alignments = [
-                    [alignment for alignment in s_alignment if alignment.marker_1.tag == group]
-                    for s_alignment in alignments
-                ]
-                log.info(f"Metrics over {group}:")
-                for metric, value in get_metrics(group_alignments, upper_bound_ner_alignments).items():
-                    log.info(f"\t{metric}: {value:.3f}")
-
-    else:
-        log.info("No alignments!")
-
-
-if __name__ == "__main__":
-    main()

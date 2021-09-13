@@ -9,6 +9,7 @@ from flair.data import Sentence
 from flair.models import SequenceTagger
 from greynirseq.cli.greynirseq import NER
 from tokenizer import tokenize
+from tokenizer.tokenizer import split_into_sentences
 
 NER_RESULTS = Generator[Tuple[List[str], List[str], str], None, None]
 log = logging.getLogger(__name__)
@@ -58,8 +59,14 @@ class IS_NER:
 
     def __call__(self, input) -> List[List[NERTag]]:
         all_lines = [line.strip() for line in input]
-        all_tokens = [list(tokenize(line)) for line in all_lines]
-        all_tokens = [[tok.txt for tok in tokens if tok.txt is not None and tok.txt != ""] for tokens in all_tokens]  # type: ignore
+        all_tokens: List[List[str]] = []
+        for line in all_lines:
+            list_of_lines = list(split_into_sentences(line))
+            tokens = []
+            for a_line in list_of_lines:
+                tokens.extend(a_line.split(" "))
+            all_tokens.append(tokens)
+
         ner_tags = []
         with open("tmp_tokens", "w") as f_tokens:
             for tokens in all_tokens:
@@ -68,8 +75,8 @@ class IS_NER:
             self.model.run(f_tokens, f_labels)
         with open("tmp_labels", "r") as f_labels:
             for line, labels, tokens in zip(all_lines, f_labels, all_tokens):
-                labels = [label for label in labels.strip().split(" ") if label != ""]
-                ner_tags.append(self.remove_B(self.join_ner_tags(self.parse_ner_tags(line, tokens, labels))))
+                label_list = [label for label in labels.strip().split(" ") if label != ""]
+                ner_tags.append(self.remove_B(self.join_ner_tags(self.parse_ner_tags(line, tokens, label_list))))
         return ner_tags
     
     @staticmethod
@@ -87,7 +94,12 @@ class IS_NER:
         Assert that the tags to be joined have the same ending."""
         for idx, ner_tag in enumerate(ner_tags):
             if "I-" in ner_tag.tag:
-                assert idx != 0, "Found I- tag at index 0, but there should be a B- tag before it."
+                # It happens that the first tag is I-<tag>, we map it to B-<tag> and continue
+                if idx == 0:
+                    ner_tag = NERTag("B-" + ner_tag.tag[2:], ner_tag.start_idx, ner_tag.end_idx)
+                    ner_tags[idx] = ner_tag
+                    return IS_NER.join_ner_tags(ner_tags)
+
                 prev_ner_tag = ner_tags[idx - 1]
                 assert prev_ner_tag.tag.endswith(
                     ner_tag.tag[2:]
