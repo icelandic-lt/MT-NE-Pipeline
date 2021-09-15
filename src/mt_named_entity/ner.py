@@ -33,6 +33,27 @@ class NERTag:
         return NERTag(tag, int(start_idx), int(end_idx))
 
 
+@dataclass(frozen=True)
+class NERMarker(NERTag):
+    """Hold a NER marker"""
+
+    named_entity: str
+
+    def __str__(self) -> str:
+        return f"{self.tag}:{self.start_idx}:{self.end_idx}:{self.named_entity}"
+
+    @staticmethod
+    def from_str(a_str: str) -> "NERMarker":
+        """Parse a string representation of a NERMarker."""
+        tag, start_idx, end_idx, entity = a_str.split(":")
+        return NERMarker(tag, int(start_idx), int(end_idx), entity)
+
+    @staticmethod
+    def from_tag(tag: NERTag, line: str) -> "NERMarker":
+        """Parse a string representation of a NERMarker."""
+        return NERMarker(tag.tag, tag.start_idx, tag.end_idx, line[tag.start_idx : tag.end_idx])
+
+
 class EN_NER:
     def __init__(self, device, batch_size):
         flair.device = torch.device(device)
@@ -78,7 +99,7 @@ class IS_NER:
                 label_list = [label for label in labels.strip().split(" ") if label != ""]
                 ner_tags.append(self.remove_B(self.join_ner_tags(self.parse_ner_tags(line, tokens, label_list))))
         return ner_tags
-    
+
     @staticmethod
     def remove_B(ner_tags: List[NERTag]) -> List[NERTag]:
         """Remove B- tags from the beginning of the tag sequence."""

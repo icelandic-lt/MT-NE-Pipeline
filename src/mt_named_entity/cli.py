@@ -1,14 +1,15 @@
 import logging
 from collections import Counter
-from pprint import pprint
+from itertools import chain
 
 import click
 import sacrebleu
 from tqdm import tqdm
 
+import mt_named_entity.eval as ner_eval
 import mt_named_entity.filter as filter
 from mt_named_entity.embed import embed_ner_tags, extract_ner_tags
-from mt_named_entity.ner import EN_NER, IS_NER, NERTag
+from mt_named_entity.ner import EN_NER, IS_NER, NERMarker, NERTag
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +18,19 @@ log = logging.getLogger(__name__)
 def cli():
     logging.basicConfig(level=logging.INFO)
 
+
+@cli.command()
+@click.argument("inp", type=click.File("r"))
+@click.argument("out", type=click.File("w"))
+@click.option("--tokens", type=int, default=250)
+def shorten(inp, out, tokens):
+    """Shorten lines in a file. If the number of tokens in the line exceeds spaces we throw it away."""
+    log.info(f"Shortening lines in file")
+    inp = tqdm(inp)
+    for line in inp:
+        if len(line.strip().split(" ")) > tokens:
+            continue
+        out.write(line)
 
 @cli.command()
 @click.argument("inp", type=click.File("r"))
@@ -149,22 +163,33 @@ def normalize(entities_file, entities_file_normalized):
 @click.argument("ref_entities", type=click.File("r"))
 @click.argument("sys_entities", type=click.File("r"))
 def eval(ref_text, sys_text, ref_entities, sys_entities):
-    log.info(f"BLEU score: {sacrebleu.corpus_bleu(sys_stream=sys_text, ref_streams=[ref_text])}")
-    log.info(f"Ref NER markers: {get_markers_stats(ref_markers)}")
-    log.info(f"Sys NER markers: {get_markers_stats(sys_markers)}")
-    alignments = [align_markers(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_markers, sys_markers)]
+    sys_text = [line.strip() for line in sys_text]
+    ref_text = [line.strip() for line in ref_text]
+    log.info(f"BLEU score: {sacrebleu.corpus_bleu(sys_text, [ref_text])}")
+    # Read the NER tags and map them to NERMarkers
+    def read_markers(entities, text):
+        all_markers = []
+        for idx, entities_line in enumerate(entities):
+            entities = [NERTag.from_str(a_str) for a_str in entities_line.strip().split(" ") if a_str != ""]
+            all_markers.append([NERMarker.from_tag(tag, text[idx]) for tag in entities])
+        return all_markers
+    all_ref_markers = read_markers(ref_entities, ref_text)
+    all_sys_markers = read_markers(sys_entities, sys_text)
+    log.info(f"Ref NER markers: {ner_eval.get_markers_stats(ref_entities)}")
+    log.info(f"Sys NER markers: {ner_eval.get_markers_stats(sys_entities)}")
+    alignments = [ner_eval.align_markers(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)]
     if alignments:
         upper_bound_ner_alignments = min(
-            sum(len(markers) for markers in ref_markers), sum(len(markers) for markers in sys_markers)
+            sum(len(markers) for markers in ref_entities), sum(len(markers) for markers in sys_entities)
         )
         log.info("Metrics over all types:")
-        for metric, value in get_metrics(alignments, upper_bound_ner_alignments).items():
+        for metric, value in ner_eval.get_metrics(alignments, upper_bound_ner_alignments).items():
             log.info(f"\t{metric}: {value:.3f}")
-        groups = {marker.tag for markers in chain(ref_markers, sys_markers) for marker in markers}
+        groups = {marker.tag for markers in chain(ref_entities, sys_entities) for marker in markers}
         for group in groups:
             upper_bound_ner_alignments = min(
-                sum(1 for markers in ref_markers for marker in markers if marker.tag == group),
-                sum(1 for markers in sys_markers for marker in markers if marker.tag == group),
+                sum(1 for markers in ref_entities for marker in markers if marker.tag == group),
+                sum(1 for markers in sys_entities for marker in markers if marker.tag == group),
             )
             if upper_bound_ner_alignments:
                 # Refs are marker_1
@@ -173,7 +198,7 @@ def eval(ref_text, sys_text, ref_entities, sys_entities):
                     for s_alignment in alignments
                 ]
                 log.info(f"Metrics over {group}:")
-                for metric, value in get_metrics(group_alignments, upper_bound_ner_alignments).items():
+                for metric, value in ner_eval.get_metrics(group_alignments, upper_bound_ner_alignments).items():
                     log.info(f"\t{metric}: {value:.3f}")
 
     else:

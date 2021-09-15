@@ -1,21 +1,12 @@
 import logging
 from collections import Counter
 from dataclasses import dataclass
-from itertools import chain
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
-import sacrebleu
-from greynirseq.ner.aligner import NULL_TAG, get_min_hun_distance
-from greynirseq.ner.ner_extracter import (
-    ENTITY_MARKERS,
-    ENTITY_MARKERS_END,
-    ENTITY_MARKERS_START,
-    TAGS,
-    NERMarker,
-    parse_line,
-)
-from greynirseq.ner.nertagger import ner, tok
-from tqdm import tqdm
+from pyjarowinkler import distance
+from scipy.optimize import linear_sum_assignment
+
+from .ner import NERMarker
 
 log = logging.getLogger(__name__)
 
@@ -31,91 +22,37 @@ class NERAlignment:
     def __str__(self) -> str:
         return f"{self.marker_1}-{self.marker_2}-{self.distance}"
 
+def get_min_hun_distance(words1: List[str], words2: List[str]) -> Tuple[float, List[Tuple[int, int, float]]]:
+    """Calculate a similarity score between all pairs of words."""
+    values = []
+    hits = []
+    min_dist = 0
+    if len(words1) == 0 or len(words2) == 0:
+        return min_dist, hits
+    for i in range(len(words1)):
+        w1 = words1[i]
+        row = []
+        for j in range(len(words2)):
+            w2 = words2[j]
+            # Jaro-Winkler distance (not similarity score)
+            row.append(1 - distance.get_jaro_distance(w1, w2, winkler=True, scaling=0.1))
+        values.append(row)
+    # Calculate the best pairing based on the similarity score.
+    row_ids, col_ids = linear_sum_assignment(values)
+    row_ids = list(row_ids)
+    col_ids = list(col_ids)
+    # The best alignment
+    hits = []
+    valsum = 0
+    for i in range(len(row_ids)):
+        row_id = row_ids[i]
+        col_id = col_ids[i]
+        hits.append((row_id, col_id, values[row_id][col_id]))
+        valsum += values[row_id][col_id]
 
-def read_embedded_markers(
-    lines_iter: Iterable[str], contains_model_marker=False
-) -> Tuple[List[List[NERMarker]], List[str]]:
-    """Read embedded NER markers from a collection of lines.
-    NERMarkers contain untokenized token offsets and NULL_TAGS."""
-    all_markers = []
-    bad_markers = []
-    for idx, line in enumerate(lines_iter):
-        correct_markers = []
-        sentence = line.strip()
-        if contains_model_marker:
-            the_split = sentence.split("\t")
-            # The model is at pos 0.
-            sentence = the_split[1]
-        # We cannot tokenize the sentence since it will ruin the tag markers.
-        all_sentence_markers = ENTITY_MARKERS.findall(sentence)
-        # We try to collect all the markers from their start to end - the input is NOT tokenized
-        tokens = sentence.split()
-        read_start_tag = False
-        token_start_idx = 0
-        tag = ""
-        named_entity_buffer = []
-        for token_idx, token in enumerate(tokens):
-            # We are searching for a start tag
-            if not read_start_tag:
-                start = ENTITY_MARKERS_START.search(token)  # Search only returns a single result
-                if start:
-                    read_start_tag = True
-                    tag = start.group(0)[-2]  # Char at -2 = the tag letter
-                    # Remove the start_tag from the token
-                    token = token[start.end() :]
-                    token_start_idx = token_idx
-                # We are not inside a tag and nothing found - leave it be
-                assert not named_entity_buffer, "The named entity buffer should be empty"
+    min_dist = valsum / (len(words1) + len(words2))
 
-            # We have read the starting tag, now we search for the closing.
-            if read_start_tag:
-
-                # Search for the ending after the start - possibly same token as start
-                end = ENTITY_MARKERS_END.search(token)
-                # We found an ending tag
-                if end:
-                    token = token[: end.start()]
-                    named_entity_buffer.append(token)
-                    # We found a correct ending tag
-                    if end.group(0)[-2] == tag:
-                        named_entity = " ".join(named_entity_buffer)
-                        correct_markers.append(
-                            NERMarker(
-                                start_idx=token_start_idx,
-                                end_idx=token_idx + 1,
-                                tag=tag,
-                                named_entity=named_entity,
-                            )
-                        )
-                    else:
-                        log.warning(f"Unable to find correct closing tag for {tag=} in {sentence=}")
-                    # We should stop trying to pair this tag
-                    read_start_tag = False
-                    # Clear the buffer, since we found an ending tag
-                    named_entity_buffer.clear()
-
-                # We have read the start tag, and we have not yet read the end,
-                else:
-                    named_entity_buffer.append(token)
-
-        # We read a start tag but it never closed.
-        if read_start_tag:
-            log.warning(f"Unable to find correct closing tag for {tag=} in {sentence=}")
-        # Gather results on missing tags
-        for marker in correct_markers:
-            all_sentence_markers.remove(f"<{marker.tag}>")
-            all_sentence_markers.remove(f"</{marker.tag}>")
-        for remaining_marker in all_sentence_markers:
-            bad_markers.append(f"{idx}:{remaining_marker}")
-
-        all_markers.append(correct_markers)
-    return all_markers, bad_markers
-
-
-def get_markers(lang: str, lines_iter: Iterable[str], device: str) -> List[List[NERMarker]]:
-    toks_iter = tok(lang=lang, lines_iter=lines_iter)
-    tagged_iter = ner(lang=lang, lines_iter=toks_iter, device=device)
-    return [parse_line(sentence=sentence, labels=labels, model=model) for sentence, labels, model in tagged_iter]
+    return min_dist, hits
 
 
 def get_markers_stats(ner_markers: List[List[NERMarker]]) -> Counter:
@@ -131,15 +68,6 @@ def align_markers(ner_markers_1: List[NERMarker], ner_markers_2: List[NERMarker]
     except ValueError:
         log.exception(f"Bad NER markers: {ner_markers_1=}, {ner_markers_2}")
     return [NERAlignment(cost, ner_markers_1[hit_1], ner_markers_2[hit_2]) for hit_1, hit_2, cost in hits]
-
-
-def get_gold_and_clean(lines_iter: Iterable[str]):
-    ref_gold_markers, bad_markers = read_embedded_markers(lines_iter=lines_iter)
-    # The ref should be correctly formatter
-    if bad_markers:
-        log.info(f"Found unpaired markers={bad_markers}")
-    ref_clean = [ENTITY_MARKERS.sub("", line) for line in lines_iter]
-    return ref_gold_markers, ref_clean
 
 
 def get_metrics(alignments: List[List[NERAlignment]], upper_bound_ner_alignments: int) -> Dict[str, float]:

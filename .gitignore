@@ -3,3 +3,5 @@ __pycache__
 out/
 results/
 test_sets/
+evaluation_out/
+parallel_corpora_out/
