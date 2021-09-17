@@ -47,7 +47,9 @@ SP_TAGS = {
     "WORK_OF_ART": MISC,
 }
 TAG_MAPPER = {**IS_TAGS, **HF_TAGS, **SP_TAGS}
+ALL_TAGS = [PER, LOC, ORG, MISC, DATE, TIME, MON, PERC]
 ALLOWED_TAGS = {PER, LOC, ORG}
+
 
 def filter_same_number_of_entity_types(src_NEs: List[NERTag], tgt_NEs: List[NERTag]) -> bool:
     """Filter translations by named entities types count. If the src and tgt do not contain the same number of NEs types it is rejected."""
@@ -58,6 +60,7 @@ def filter_same_number_of_entity_types(src_NEs: List[NERTag], tgt_NEs: List[NERT
     if src_counter != tgt_counter:
         return False
     return True
+
 
 def map_named_entity_types(ner_tags: List[NERTag]) -> List[NERTag]:
     """Map named entities types. We map different system NE markers to a uniform format using TAG_MAPPER."""

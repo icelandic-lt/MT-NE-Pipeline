@@ -6,10 +6,17 @@ from typing import Dict, List, Tuple
 from pyjarowinkler import distance
 from scipy.optimize import linear_sum_assignment
 
+from mt_named_entity.embed import extract_ner_tags
+
 from .ner import NERMarker
 
 log = logging.getLogger(__name__)
 
+ALIGNED = "aligned"
+UPPER_BOUND = "upper_bound"
+DISTANCE = "dist"
+MATCHES = "matches"
+ALL_METRICS = [ALIGNED, UPPER_BOUND, DISTANCE, MATCHES]
 
 @dataclass(frozen=True)
 class NERAlignment:
@@ -65,24 +72,25 @@ def align_markers(ner_markers_1: List[NERMarker], ner_markers_2: List[NERMarker]
             [ner_marker.named_entity for ner_marker in ner_markers_1],
             [ner_marker.named_entity for ner_marker in ner_markers_2],
         )
-    except ValueError:
+    except (ValueError, distance.JaroDistanceException):
         log.exception(f"Bad NER markers: {ner_markers_1=}, {ner_markers_2}")
     return [NERAlignment(cost, ner_markers_1[hit_1], ner_markers_2[hit_2]) for hit_1, hit_2, cost in hits]
 
 
 def get_metrics(alignments: List[List[NERAlignment]], upper_bound_ner_alignments: int) -> Dict[str, float]:
     dists = [alignment.distance for line_alignment in alignments for alignment in line_alignment]
-    accuracy = sum(
+    exact_match = sum(
         [
-            alignment.marker_1.named_entity == alignment.marker_2.named_entity
+            1 
             for line_alignment in alignments
             for alignment in line_alignment
+            if alignment.marker_1.named_entity == alignment.marker_2.named_entity
         ]
-    ) / len(dists)
+    )
     return {
-        "Alignment count": len(dists),
-        "Alignment coverage": len(dists) / upper_bound_ner_alignments,
-        "Average alignment distance": sum(dists) / len(dists),
-        "Accuracy (exact match)": accuracy,
+        ALIGNED: len(dists),
+        UPPER_BOUND: upper_bound_ner_alignments,
+        DISTANCE: sum(dists),
+        MATCHES: exact_match,
     }
 

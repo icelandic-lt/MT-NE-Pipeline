@@ -1,6 +1,7 @@
 import logging
 from collections import Counter
 from itertools import chain
+from typing import Dict, List
 
 import click
 import sacrebleu
@@ -12,6 +13,9 @@ from mt_named_entity.embed import embed_ner_tags, extract_ner_tags
 from mt_named_entity.ner import EN_NER, IS_NER, NERMarker, NERTag
 
 log = logging.getLogger(__name__)
+
+ALL_GROUPS = ["all"] + filter.ALL_TAGS
+METRIC_FIELDS = [f"{group}_{metric}" for group in ALL_GROUPS for metric in ner_eval.ALL_METRICS]
 
 
 @click.group()
@@ -31,6 +35,7 @@ def shorten(inp, out, tokens):
         if len(line.strip().split(" ")) > tokens:
             continue
         out.write(line)
+
 
 @cli.command()
 @click.argument("inp", type=click.File("r"))
@@ -145,6 +150,7 @@ def statistics(entities_file):
     for key, value in sorted(counter.items()):
         click.echo(f"{key}\t{value}")
 
+
 @cli.command()
 @click.argument("entities_file", type=click.File("r"))
 @click.argument("entities_file_normalized", type=click.File("w"))
@@ -162,47 +168,97 @@ def normalize(entities_file, entities_file_normalized):
 @click.argument("sys_text", type=click.File("r"))
 @click.argument("ref_entities", type=click.File("r"))
 @click.argument("sys_entities", type=click.File("r"))
-def eval(ref_text, sys_text, ref_entities, sys_entities):
+@click.option("--tsv/--no-tsv", default=False)
+def eval(ref_text, sys_text, ref_entities, sys_entities, tsv):
     sys_text = [line.strip() for line in sys_text]
     ref_text = [line.strip() for line in ref_text]
-    log.info(f"BLEU score: {sacrebleu.corpus_bleu(sys_text, [ref_text])}")
+    # log.info(f"BLEU score: {sacrebleu.corpus_bleu(sys_text, [ref_text])}")
     # Read the NER tags and map them to NERMarkers
-    def read_markers(entities, text):
+    def read_markers(entities, text) -> List[List[NERMarker]]:
         all_markers = []
         for idx, entities_line in enumerate(entities):
             entities = [NERTag.from_str(a_str) for a_str in entities_line.strip().split(" ") if a_str != ""]
+            if len(entities) == 0:
+                continue
             all_markers.append([NERMarker.from_tag(tag, text[idx]) for tag in entities])
         return all_markers
-    all_ref_markers = read_markers(ref_entities, ref_text)
-    all_sys_markers = read_markers(sys_entities, sys_text)
-    log.info(f"Ref NER markers: {ner_eval.get_markers_stats(ref_entities)}")
-    log.info(f"Sys NER markers: {ner_eval.get_markers_stats(sys_entities)}")
-    alignments = [ner_eval.align_markers(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)]
+
+    ref_entities = read_markers(ref_entities, ref_text)
+    sys_entities = read_markers(sys_entities, sys_text)
+    metrics: Dict[str, Dict[str, float]] = dict()
+    alignments = [
+        ner_eval.align_markers(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)
+    ]
     if alignments:
-        upper_bound_ner_alignments = min(
-            sum(len(markers) for markers in ref_entities), sum(len(markers) for markers in sys_entities)
-        )
-        log.info("Metrics over all types:")
-        for metric, value in ner_eval.get_metrics(alignments, upper_bound_ner_alignments).items():
-            log.info(f"\t{metric}: {value:.3f}")
-        groups = {marker.tag for markers in chain(ref_entities, sys_entities) for marker in markers}
-        for group in groups:
-            upper_bound_ner_alignments = min(
-                sum(1 for markers in ref_entities for marker in markers if marker.tag == group),
-                sum(1 for markers in sys_entities for marker in markers if marker.tag == group),
+        for group in ALL_GROUPS:
+            # We count maximum alignments based on the ref
+            upper_bound_ner_alignments = sum(
+                1 for markers in ref_entities for marker in markers if marker.tag == group or group == "all"
             )
-            if upper_bound_ner_alignments:
-                # Refs are marker_1
-                group_alignments = [
-                    [alignment for alignment in s_alignment if alignment.marker_1.tag == group]
-                    for s_alignment in alignments
-                ]
-                log.info(f"Metrics over {group}:")
-                for metric, value in ner_eval.get_metrics(group_alignments, upper_bound_ner_alignments).items():
-                    log.info(f"\t{metric}: {value:.3f}")
+            # Refs are marker_1
+            group_alignments = [
+                [alignment for alignment in s_alignment if alignment.marker_1.tag == group or group == "all"]
+                for s_alignment in alignments
+            ]
+            group_metrics = ner_eval.get_metrics(group_alignments, upper_bound_ner_alignments)
+            metrics[group] = group_metrics
 
     else:
-        log.info("No alignments!")
+        raise ValueError("No alignments found")
+    if tsv:
+        click.echo(metric_values_to_tsv(metrics))
+    else:
+        log_metric_values(metrics)
+
+
+def metric_values_to_tsv(metrics):
+    a_str = ""
+    for group in ALL_GROUPS:
+        a_str += ",".join(f"{value:.3f}" for value in metrics[group].values()) + ","
+    a_str += "\n"
+    return a_str
+
+
+def log_metric_values(metrics):
+    for group in ALL_GROUPS:
+        if metrics[group][ner_eval.ALIGNED] == 0.0:
+            log.info(f"No alignments for {group}")
+            print(f"No alignments for {group}")
+        else:
+            log.info(f"{group}")
+            log.info(f"Alignment count: {metrics[group][ner_eval.ALIGNED]}")
+            log.info(f"Alignment coverage: {metrics[group][ner_eval.ALIGNED]/metrics[group][ner_eval.UPPER_BOUND]}")
+            log.info(
+                f"Average alignment distance: {metrics[group][ner_eval.DISTANCE]/metrics[group][ner_eval.ALIGNED]}"
+            )
+            log.info(f"Accuracy (exact match): {metrics[group][ner_eval.MATCHES]/metrics[group][ner_eval.ALIGNED]}")
+            print(metrics[group][ner_eval.ALIGNED])
+            print(metrics[group][ner_eval.ALIGNED]/metrics[group][ner_eval.UPPER_BOUND])
+            print(metrics[group][ner_eval.DISTANCE]/metrics[group][ner_eval.ALIGNED])
+            print(metrics[group][ner_eval.MATCHES]/metrics[group][ner_eval.ALIGNED])
+            print()
+
+
+@cli.command()
+@click.argument("result_file", type=click.File("r"))
+@click.option("--tsv/--no-tsv", default=False)
+def combine_results(result_file, tsv):
+    """Combine the results from a file accross groups. Write result to stdout."""
+    group_metrics = {metric: 0 for metric in ner_eval.ALL_METRICS}
+    metrics = {group: dict(group_metrics) for group in ALL_GROUPS}
+    for line in result_file:
+        values = [float(a) for a in line.strip().split(",") if a != ""]
+        if len(values) == 0:
+            continue
+        idx = 0
+        for group in ALL_GROUPS:
+            for metric in ner_eval.ALL_METRICS:
+                metrics[group][metric] += values[idx]
+                idx += 1
+    if tsv:
+        click.echo(metric_values_to_tsv(metrics))
+    else:
+        log_metric_values(metrics)
 
 
 if __name__ == "__main__":

@@ -3,8 +3,8 @@ TEST_SETS="./test_sets"
 OUT_DIR="/data/scratch/haukurpj/Projects/MT_NER_EVAL/evaluation_out"
 mkdir -p $OUT_DIR
 
-EN_IS_MODELS="out_mb25_enis out_mb25c_enis"
-IS_EN_MODELS="out_mb25c_default_isen out_mb25_isen"
+EN_IS_MODELS="mb25-enis mb25c-enis"
+IS_EN_MODELS="mb25c-isen mb25-isen"
 
 DATASETS="eso bible ees emea2016 os2018 tatoeba wmt-2021-dev flores-dev"
 LANG="is"
@@ -21,7 +21,7 @@ for MODEL in $EN_IS_MODELS; do
         wc -l $ref_entities
         wc -l $sys_entities
         results="$MODEL_OUT_DIR.$dataset.$LANG".results
-        mt eval $ref_text $sys_text $ref_entities $sys_entities > $results
+        mt eval $ref_text $sys_text $ref_entities $sys_entities --tsv > $results
     done
 done
 LANG="en"
@@ -38,6 +38,6 @@ for MODEL in $IS_EN_MODELS; do
         wc -l $ref_entities
         wc -l $sys_entities
         results="$MODEL_OUT_DIR.$dataset.$LANG".results
-        mt eval $ref_text $sys_text $ref_entities $sys_entities > $results
+        mt eval $ref_text $sys_text $ref_entities $sys_entities --tsv > $results
     done
 done
