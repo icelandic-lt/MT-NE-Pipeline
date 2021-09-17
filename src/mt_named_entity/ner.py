@@ -1,4 +1,5 @@
 import logging
+import os
 from dataclasses import dataclass
 from re import S
 from typing import Generator, Iterable, List, Tuple
@@ -98,6 +99,8 @@ class IS_NER:
             for line, labels, tokens in zip(all_lines, f_labels, all_tokens):
                 label_list = [label for label in labels.strip().split(" ") if label != ""]
                 ner_tags.append(self.remove_B(self.join_ner_tags(self.parse_ner_tags(line, tokens, label_list))))
+        os.remove("tmp_tokens")
+        os.remove("tmp_labels")
         return ner_tags
 
     @staticmethod
@@ -141,10 +144,26 @@ class IS_NER:
             labels
         ), f"Number of tokens and labels do not match: \ntokens={tokens}\nlabels={labels}\n"
         tags = []
-        current_index = 0
+        start_idx = 0
+        additional_length = 0
         for token, label in zip(tokens, labels):
-            start_idx = line.find(token, current_index)
-            end_idx = start_idx + len(token)
+            found_idx = line.find(token, start_idx)
+            if found_idx == -1:
+                # The tokenizer actually coalesces '% 44' to a single token, so we have to check for that.
+                found_idx = line.find(token[:-1], start_idx)
+                additional_length = 1
+                if found_idx == -1:
+                    # The tokenizer actually coalesces '$ 10'  to a single token, so we have to check for that.
+                    found_idx = line.find(token[1:], start_idx)
+                    additional_length = 1
+                    if found_idx == -1:
+                        raise ValueError(f"Could not find token: {token}, line: {line}")
+                    else:
+                        found_idx -= 2
+            end_idx = found_idx + len(token) + additional_length
             if label != "O":
-                tags.append(NERTag(label, start_idx, end_idx))
+                assert found_idx < end_idx, f"Found end index before start index: {found_idx}, {end_idx}, {line}"
+                tags.append(NERTag(label, found_idx, end_idx))
+            start_idx = end_idx
+            additional_length = 0
         return tags
