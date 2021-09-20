@@ -1,7 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass
-from re import S
+from datetime import datetime
 from typing import Generator, Iterable, List, Tuple
 
 import flair
@@ -77,7 +77,7 @@ class EN_NER:
 
 class IS_NER:
     def __init__(self, device, batch_size):
-        self.model = NER(device, batch_size=batch_size, show_progress=True, max_input_words_split=250)
+        self.model = NER(device, batch_size=batch_size, show_progress=True, max_input_words_split=100)
 
     def __call__(self, input) -> List[List[NERTag]]:
         all_lines = [line.strip() for line in input]
@@ -90,17 +90,19 @@ class IS_NER:
             all_tokens.append(tokens)
 
         ner_tags = []
-        with open("tmp_tokens", "w") as f_tokens:
+        tmp_tokens_file = f"tmp_tokens_{datetime.now()}"
+        tmp_labels_file = f"tmp_labels_{datetime.now()}"
+        with open(tmp_tokens_file, "w") as f_tokens:
             for tokens in all_tokens:
                 f_tokens.write(" ".join(tokens) + "\n")
-        with open("tmp_tokens", "r") as f_tokens, open("tmp_labels", "w") as f_labels:
+        with open(tmp_tokens_file, "r") as f_tokens, open(tmp_labels_file, "w") as f_labels:
             self.model.run(f_tokens, f_labels)
-        with open("tmp_labels", "r") as f_labels:
+        with open(tmp_labels_file, "r") as f_labels:
             for line, labels, tokens in zip(all_lines, f_labels, all_tokens):
                 label_list = [label for label in labels.strip().split(" ") if label != ""]
                 ner_tags.append(self.remove_B(self.join_ner_tags(self.parse_ner_tags(line, tokens, label_list))))
-        os.remove("tmp_tokens")
-        os.remove("tmp_labels")
+        os.remove(tmp_labels_file)
+        os.remove(tmp_tokens_file)
         return ner_tags
 
     @staticmethod
@@ -120,14 +122,18 @@ class IS_NER:
             if "I-" in ner_tag.tag:
                 # It happens that the first tag is I-<tag>, we map it to B-<tag> and continue
                 if idx == 0:
+                    log.error(f"Found I- tag as a starting tag: {ner_tag.tag}")
+                    log.error("Changing the I-tag to be a B-tag.")
                     ner_tag = NERTag("B-" + ner_tag.tag[2:], ner_tag.start_idx, ner_tag.end_idx)
                     ner_tags[idx] = ner_tag
                     return IS_NER.join_ner_tags(ner_tags)
 
                 prev_ner_tag = ner_tags[idx - 1]
-                assert prev_ner_tag.tag.endswith(
-                    ner_tag.tag[2:]
-                ), f"Found I- tag with different ending than B- tag: {ner_tag.tag}, {prev_ner_tag.tag}"
+                # If the previous tag is B-<tag1> but we read I-<tag2> we map it to B-<tag1>I-<tag1> 
+                if not prev_ner_tag.tag.endswith(ner_tag.tag[2:]):
+                    log.error(f"Found I- tag with different ending than B- tag: {ner_tag.tag}, {prev_ner_tag.tag}")
+                    log.error("Changing the I-tag to be consistent with the B-tag.")
+                    ner_tag = NERTag("B-" + ner_tag.tag[2:], ner_tag.start_idx, ner_tag.end_idx)
                 assert (
                     "B-" in prev_ner_tag.tag
                 ), f"Found I- tag with no B- tag before it: {ner_tag.tag}, {prev_ner_tag.tag}"
