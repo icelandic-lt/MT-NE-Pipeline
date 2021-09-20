@@ -1,10 +1,9 @@
 import logging
 from collections import Counter
-from itertools import chain
+from random import sample, shuffle
 from typing import Dict, List
 
 import click
-import sacrebleu
 from tqdm import tqdm
 
 import mt_named_entity.eval as ner_eval
@@ -35,6 +34,31 @@ def shorten(inp, out, tokens):
         if len(line.strip().split(" ")) > tokens:
             continue
         out.write(line)
+
+
+@cli.command()
+@click.argument("inp_lang1", type=click.File("r"))
+@click.argument("inp_lang2", type=click.File("r"))
+@click.argument("out_lang1", type=click.File("w"))
+@click.argument("out_lang2", type=click.File("w"))
+@click.argument("total_num_lines", type=int)
+@click.option("--fraction", type=float, default=0.05, help="Fraction of total lines in input to keep in sample.")
+def sample_parallel(inp_lang1, inp_lang2, out_lang1, out_lang2, total_num_lines, fraction):
+    log.info(f"Sampling parallel corpus.")
+    num_lines_to_keep = int(total_num_lines * fraction)
+    log.info(
+        f"Total lines in input: {total_num_lines} with fraction: {fraction}. Resulting in: {num_lines_to_keep} lines."
+    )
+    inp_lang1 = tqdm(inp_lang1)
+    indices = sorted(sample(range(total_num_lines), num_lines_to_keep))
+    indices_index = 0
+    for line_lang1, line_lang2, idx in zip(inp_lang1, inp_lang2, range(total_num_lines)):
+        if idx == indices[indices_index]:
+            out_lang1.write(line_lang1)
+            out_lang2.write(line_lang2)
+            indices_index += 1
+            if indices_index == num_lines_to_keep:
+                break
 
 
 @cli.command()
@@ -114,6 +138,10 @@ def filter_text_by_ner(
     """Filter the src and tgt based on the provided NER entities. Empty lines are not written out."""
     log.info(f"Filtering")
     src_text = tqdm(src_text)
+    src_text_to_write = []
+    tgt_text_to_write = []
+    src_entities_to_write = []
+    tgt_entities_to_write = []
     for sent_src_text, sent_tgt_text, sent_src_entities, sent_tgt_entities in zip(
         src_text, tgt_text, src_entities, tgt_entities
     ):
@@ -126,11 +154,27 @@ def filter_text_by_ner(
         sent_entities = [filter.map_named_entity_types(entities) for entities in sent_entities]
         # We filter out named entities we are not interested in.
         sent_entities = [filter.filter_named_entity_types(entities) for entities in sent_entities]
+        if not sent_entities[0] or not sent_entities[1]:
+            continue
         # We then filter out sentences which do not have the same number of entity types.
         if not filter.filter_same_number_of_entity_types(*sent_entities):
             continue
-
         # The newline is still present.
+        src_text_to_write.append(sent_src_text)
+        tgt_text_to_write.append(sent_tgt_text)
+
+
+    assert len(src_text_to_write) == len(tgt_text_to_write)
+    assert len(src_entities_to_write) == len(tgt_entities_to_write)
+    assert len(src_entities_to_write) == len(src_text_to_write)
+    length = len(src_text_to_write)
+    indices = list(range(length))
+    shuffle(indices)
+    for idx in indices:
+        sent_src_text, sent_tgt_text, sent_src_entities, sent_tgt_entities = src_text_to_write[idx], tgt_text_to_write[idx], src_entities_to_write[idx], tgt_entities_to_write[idx]
+        assert sent_src_entities == sent_tgt_entities
+        assert sent_src_text.strip() != ""
+        assert sent_tgt_text.strip() != ""
         src_text_out.write(sent_src_text)
         tgt_text_out.write(sent_tgt_text)
         src_entities_out.write(" ".join([str(tag) for tag in sent_src_entities]) + "\n")
@@ -178,8 +222,6 @@ def eval(ref_text, sys_text, ref_entities, sys_entities, tsv):
         all_markers = []
         for idx, entities_line in enumerate(entities):
             entities = [NERTag.from_str(a_str) for a_str in entities_line.strip().split(" ") if a_str != ""]
-            if len(entities) == 0:
-                continue
             all_markers.append([NERMarker.from_tag(tag, text[idx]) for tag in entities])
         return all_markers
 
@@ -233,9 +275,9 @@ def log_metric_values(metrics):
             )
             log.info(f"Accuracy (exact match): {metrics[group][ner_eval.MATCHES]/metrics[group][ner_eval.ALIGNED]}")
             print(metrics[group][ner_eval.ALIGNED])
-            print(metrics[group][ner_eval.ALIGNED]/metrics[group][ner_eval.UPPER_BOUND])
-            print(metrics[group][ner_eval.DISTANCE]/metrics[group][ner_eval.ALIGNED])
-            print(metrics[group][ner_eval.MATCHES]/metrics[group][ner_eval.ALIGNED])
+            print(metrics[group][ner_eval.ALIGNED] / metrics[group][ner_eval.UPPER_BOUND])
+            print(metrics[group][ner_eval.DISTANCE] / metrics[group][ner_eval.ALIGNED])
+            print(metrics[group][ner_eval.MATCHES] / metrics[group][ner_eval.ALIGNED])
             print()
 
 
@@ -260,6 +302,41 @@ def combine_results(result_file, tsv):
     else:
         log_metric_values(metrics)
 
+@cli.command()
+@click.argument("ref_text", type=click.File("r"))
+@click.argument("sys_text", type=click.File("r"))
+@click.argument("ref_entities", type=click.File("r"))
+@click.argument("sys_entities", type=click.File("r"))
+@click.option("--tag", type=str, default="P")
+def show_examples(ref_text, sys_text, ref_entities, sys_entities, tag):
+    """Show examples of alignments of a given tag type"""
+    sys_text = [line.strip() for line in sys_text]
+    ref_text = [line.strip() for line in ref_text]
+    # Read the NER tags and map them to NERMarkers
+    def read_markers(entities, text) -> List[List[NERMarker]]:
+        all_markers = []
+        for idx, entities_line in enumerate(entities):
+            entities = [NERTag.from_str(a_str) for a_str in entities_line.strip().split(" ") if a_str != ""]
+            all_markers.append([NERMarker.from_tag(tag, text[idx]) for tag in entities])
+        return all_markers
+
+    ref_entities = read_markers(ref_entities, ref_text)
+    sys_entities = read_markers(sys_entities, sys_text)
+    alignments = [
+        ner_eval.align_markers(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)
+    ]
+    group_alignments = [
+        [alignment for alignment in s_alignment if alignment.marker_1.tag == tag]
+        for s_alignment in alignments
+    ]
+    assert len(group_alignments) == len(ref_text)
+    for idx, s_alignment in enumerate(alignments):
+        if len(s_alignment) > 0:
+            if any(alignment.marker_1.tag == tag for alignment in s_alignment):
+                for alignment in s_alignment:
+                    print(alignment)
+                    print(ref_text[idx])
+                    print(sys_text[idx])
 
 if __name__ == "__main__":
     cli()
