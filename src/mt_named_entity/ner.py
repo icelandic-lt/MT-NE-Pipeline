@@ -146,6 +146,7 @@ class IS_NER:
     def parse_ner_tags(line: str, tokens: List[str], labels: List[str]) -> List[NERTag]:
         """Iterate through the labels and tokens, and for each token, we find the substring in the original line to get the indices.
         Return a list of NERTags which are not O."""
+        extra_length_for_spaces = 3
         assert len(tokens) == len(
             labels
         ), f"Number of tokens and labels do not match: \ntokens={tokens}\nlabels={labels}\n"
@@ -153,14 +154,14 @@ class IS_NER:
         start_idx = 0
         additional_length = 0
         for token, label in zip(tokens, labels):
-            found_idx = line.find(token, start_idx, start_idx + len(token))
+            found_idx = line.find(token, start_idx, start_idx + len(token) + extra_length_for_spaces)
             if found_idx == -1:
                 # The tokenizer actually coalesces '% 44' to a single token, so we have to check for that.
-                found_idx = line.find(token[:-1], start_idx, start_idx + len(token))
+                found_idx = line.find(token[:-1], start_idx, start_idx + len(token) + extra_length_for_spaces)
                 additional_length = 1
                 if found_idx == -1:
                     # The tokenizer actually coalesces '$ 10'  to a single token, so we have to check for that.
-                    found_idx = line.find(token[1:], start_idx, start_idx + len(token))
+                    found_idx = line.find(token[1:], start_idx, start_idx + len(token) + extra_length_for_spaces)
                     additional_length = 1
                     if found_idx == -1:
                         raise ValueError(f"Could not find token: {token}, line: {line}")
