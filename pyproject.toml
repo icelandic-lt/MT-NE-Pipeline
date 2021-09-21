@@ -34,6 +34,7 @@ pyjarowinkler = "^1.8"
 scipy = "^1.5"
 flair = "^0.9"
 greynirseq = {git = "https://github.com/mideind/greynirseq.git", rev = "main"}
+islenska = "^0.3.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.0.1"

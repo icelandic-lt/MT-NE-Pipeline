@@ -6,15 +6,17 @@ from typing import Dict, List
 import click
 from tqdm import tqdm
 
-import mt_named_entity.eval as ner_eval
-import mt_named_entity.filter as filter
-from mt_named_entity.embed import embed_ner_tags, extract_ner_tags
-from mt_named_entity.ner import EN_NER, IS_NER, NERMarker, NERTag
+from mt_named_entity.align import align_markers_by_jaro_winkler
+
+from .embed import embed_ner_tags, extract_ner_tags
+from .eval import ALIGNED, ALL_METRICS, DISTANCE, MATCHES, UPPER_BOUND, get_metrics
+from .filter import ALL_TAGS, filter_named_entity_types, filter_same_number_of_entity_types, map_named_entity_types
+from .ner import EN_NER, IS_NER, NERMarker, NERTag
 
 log = logging.getLogger(__name__)
 
-ALL_GROUPS = ["all"] + filter.ALL_TAGS
-METRIC_FIELDS = [f"{group}_{metric}" for group in ALL_GROUPS for metric in ner_eval.ALL_METRICS]
+ALL_GROUPS = ["all"] + ALL_TAGS
+METRIC_FIELDS = [f"{group}_{metric}" for group in ALL_GROUPS for metric in ALL_METRICS]
 
 
 @click.group()
@@ -151,28 +153,30 @@ def filter_text_by_ner(
             continue
         sent_entities = [sent_src_entities, sent_tgt_entities]
         # We map the named entities to a unified format, so that we can use the same filter function.
-        sent_entities = [filter.map_named_entity_types(entities) for entities in sent_entities]
+        sent_entities = [map_named_entity_types(entities) for entities in sent_entities]
         # We filter out named entities we are not interested in.
-        sent_entities = [filter.filter_named_entity_types(entities) for entities in sent_entities]
+        sent_entities = [filter_named_entity_types(entities) for entities in sent_entities]
         if not sent_entities[0] or not sent_entities[1]:
             continue
         # We then filter out sentences which do not have the same number of entity types.
-        if not filter.filter_same_number_of_entity_types(*sent_entities):
+        if not filter_same_number_of_entity_types(*sent_entities):
             continue
         # The newline is still present.
         src_text_to_write.append(sent_src_text)
         tgt_text_to_write.append(sent_tgt_text)
+        src_entities_to_write.append(sent_entities[0])
+        tgt_entities_to_write.append(sent_entities[1])
 
 
-    assert len(src_text_to_write) == len(tgt_text_to_write)
-    assert len(src_entities_to_write) == len(tgt_entities_to_write)
-    assert len(src_entities_to_write) == len(src_text_to_write)
+    assert len(src_text_to_write) == len(tgt_text_to_write), f"The source text and tgt should have the same lengths. src={len(src_text_to_write)}, tgt={len(tgt_text_to_write)}"
+    assert len(src_entities_to_write) == len(tgt_entities_to_write), f"The source NEs and target should have the same lengths. src_ne={len(src_entities_to_write)}, tgt_ne={tgt_entities_to_write}"
+    assert len(src_entities_to_write) == len(src_text_to_write), f"The source text and NEs should have the same lengths. src_text={len(src_text_to_write)}, src_ne={len(src_entities_to_write)}"
     length = len(src_text_to_write)
     indices = list(range(length))
     shuffle(indices)
     for idx in indices:
         sent_src_text, sent_tgt_text, sent_src_entities, sent_tgt_entities = src_text_to_write[idx], tgt_text_to_write[idx], src_entities_to_write[idx], tgt_entities_to_write[idx]
-        assert sent_src_entities == sent_tgt_entities
+        assert len(sent_src_entities) == len(sent_tgt_entities), f"The source NEs and target NEs should have the same lengths. src_ne={len(sent_src_entities)}, tgt_ne={len(sent_tgt_entities)}"
         assert sent_src_text.strip() != ""
         assert sent_tgt_text.strip() != ""
         src_text_out.write(sent_src_text)
@@ -203,7 +207,7 @@ def normalize(entities_file, entities_file_normalized):
     log.info(f"Normalizing")
     for line in entities_file:
         entities = [NERTag.from_str(a_str) for a_str in line.strip().split(" ") if a_str != ""]
-        normalized_entities = filter.map_named_entity_types(entities)
+        normalized_entities = map_named_entity_types(entities)
         entities_file_normalized.write(" ".join([str(tag) for tag in normalized_entities]) + "\n")
 
 
@@ -229,7 +233,7 @@ def eval(ref_text, sys_text, ref_entities, sys_entities, tsv):
     sys_entities = read_markers(sys_entities, sys_text)
     metrics: Dict[str, Dict[str, float]] = dict()
     alignments = [
-        ner_eval.align_markers(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)
+        align_markers_by_jaro_winkler(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)
     ]
     if alignments:
         for group in ALL_GROUPS:
@@ -242,7 +246,7 @@ def eval(ref_text, sys_text, ref_entities, sys_entities, tsv):
                 [alignment for alignment in s_alignment if alignment.marker_1.tag == group or group == "all"]
                 for s_alignment in alignments
             ]
-            group_metrics = ner_eval.get_metrics(group_alignments, upper_bound_ner_alignments)
+            group_metrics = get_metrics(group_alignments, upper_bound_ner_alignments)
             metrics[group] = group_metrics
 
     else:
@@ -263,21 +267,21 @@ def metric_values_to_tsv(metrics):
 
 def log_metric_values(metrics):
     for group in ALL_GROUPS:
-        if metrics[group][ner_eval.ALIGNED] == 0.0:
+        if metrics[group][ALIGNED] == 0.0:
             log.info(f"No alignments for {group}")
             print(f"No alignments for {group}")
         else:
             log.info(f"{group}")
-            log.info(f"Alignment count: {metrics[group][ner_eval.ALIGNED]}")
-            log.info(f"Alignment coverage: {metrics[group][ner_eval.ALIGNED]/metrics[group][ner_eval.UPPER_BOUND]}")
+            log.info(f"Alignment count: {metrics[group][ALIGNED]}")
+            log.info(f"Alignment coverage: {metrics[group][ALIGNED]/metrics[group][UPPER_BOUND]}")
             log.info(
-                f"Average alignment distance: {metrics[group][ner_eval.DISTANCE]/metrics[group][ner_eval.ALIGNED]}"
+                f"Average alignment distance: {metrics[group][DISTANCE]/metrics[group][ALIGNED]}"
             )
-            log.info(f"Accuracy (exact match): {metrics[group][ner_eval.MATCHES]/metrics[group][ner_eval.ALIGNED]}")
-            print(metrics[group][ner_eval.ALIGNED])
-            print(metrics[group][ner_eval.ALIGNED] / metrics[group][ner_eval.UPPER_BOUND])
-            print(metrics[group][ner_eval.DISTANCE] / metrics[group][ner_eval.ALIGNED])
-            print(metrics[group][ner_eval.MATCHES] / metrics[group][ner_eval.ALIGNED])
+            log.info(f"Accuracy (exact match): {metrics[group][MATCHES]/metrics[group][ALIGNED]}")
+            print(metrics[group][ALIGNED])
+            print(metrics[group][ALIGNED] / metrics[group][UPPER_BOUND])
+            print(metrics[group][DISTANCE] / metrics[group][ALIGNED])
+            print(metrics[group][MATCHES] / metrics[group][ALIGNED])
             print()
 
 
@@ -286,7 +290,7 @@ def log_metric_values(metrics):
 @click.option("--tsv/--no-tsv", default=False)
 def combine_results(result_file, tsv):
     """Combine the results from a file accross groups. Write result to stdout."""
-    group_metrics = {metric: 0 for metric in ner_eval.ALL_METRICS}
+    group_metrics = {metric: 0 for metric in ALL_METRICS}
     metrics = {group: dict(group_metrics) for group in ALL_GROUPS}
     for line in result_file:
         values = [float(a) for a in line.strip().split(",") if a != ""]
@@ -294,7 +298,7 @@ def combine_results(result_file, tsv):
             continue
         idx = 0
         for group in ALL_GROUPS:
-            for metric in ner_eval.ALL_METRICS:
+            for metric in ALL_METRICS:
                 metrics[group][metric] += values[idx]
                 idx += 1
     if tsv:
@@ -323,7 +327,7 @@ def show_examples(ref_text, sys_text, ref_entities, sys_entities, tag):
     ref_entities = read_markers(ref_entities, ref_text)
     sys_entities = read_markers(sys_entities, sys_text)
     alignments = [
-        ner_eval.align_markers(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)
+        align_markers_by_jaro_winkler(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)
     ]
     group_alignments = [
         [alignment for alignment in s_alignment if alignment.marker_1.tag == tag]
