@@ -1,57 +1,117 @@
 # Named Entity Processing Pipeline for NMT
 
-In training data for NMT (neural machine translation) systems it is of benefit to have a large and varried corpus. Unfortunately this is not often the case. This submodule implements a pipeline for tagging, filtering, matching, substituing and evaluating translation of named entities in a parallel English to Icelandic corpus.
+In training data for NMT (neural machine translation) systems it is of benefit to have a large and varried corpus. Unfortunately this is not often the case. This submodule implements a pipeline for tagging, filtering, matching, substituing/correcting and evaluating translation of named entities in a parallel English to Icelandic corpus.
+
+## Installation
+```
+pip install git+https://github.com/mideind/MT-NE-Pipeline
+```
 
 ## Name Tagging
+For Icelandic NER the included IceBERT-NER model is used. For english we use Flair.
 
-For Icelandic NER the included IceBERT-NER model is used. For english we use huggingface (for better accuracy) and spacy (due to length restrictions). (`python -m spacy download en_core_web_lg`).
+The following command accepts as input a txt file which has a sentence (or multiple) per line and writes out the NEs in the output file. The command will preserve empty lines.
 
-The script accepts a file in English or Icelandic, the sentences will then be tokenized and tokens joined with spaces as the model expects.
-
-In later stages we assume that the English and Icelandic sentences are translations of each other, i.e. parallel.
-
-```example.is
+```tests/testdata/example.is
 Guðrún fór í heimsókn til Einars Jónssonar.
 Anna fékk gjöf frá Alexei, Pétri og Páli.
+
+Núna með Tómar Línur, takk Joe!
+
+Ha?
+
 ```
-```example.en
-Einar Jónsson was visited by Guðrún.
-Anna got a gift from Pétur, Páll and Alexei.
+Running the NER on the example file and writing output to `example.is.ner` (use `-` to specify stdout).
+```bash
+mt ner tests/data/example.is example.is.ner --lang is
+cat example.is.ner
+# Produces
+Person:0:6 Person:26:42
+Person:0:4 Person:19:25 Person:27:32 Person:36:40
+
+Organization:9:20 Person:27:30
+
+
+```
+The NEs are written to `example.is.ner` in which each line corresponds to a line in the input. The NEs are formatted as `label:start_char_idx:end_char_idx`, i.e. the span of the label. The spans are separated with space. The BIO-markers have been joined together to create the span.
+
+For more options (GPU/batch_size) call `mt ner --help`
+
+Similarly, for English:
+```tests/data/example.en
+Guðrún visited Einars Jónssonar.
+Anna got a gift from Pétri, Páli and Alexei.
+
+Now with Empty Lines, thanks Joe!
+
+Huh?
 ```
 
 ```bash
-python nertagger.py --language is --input testdata/example.is --output testdata/example.ner.is
-python nertagger.py --language en --input testdata/example.en --output testdata/example.ner.en
-```
+mt ner tests/data/example.en example.en.ner --lang en
+cat example.en.ner
+# Produces
+PER:0:6 PER:15:31
+PER:0:4 PER:21:26 PER:28:32 PER:37:43
 
-Which writes to file the original sentence, labels and a tag for the NER model used.
-```
-Guðrún fór í heimsókn til Einars Jónssonar .	B-Person O O O O B-Person I-Person O	is
-Anna fékk gjöf frá Alexei , Pétri og Páli .	B-Person O O O B-Person O B-Person O B-Person O	is
-```
+MISC:9:20 PER:29:32
 
-and for English the last column is hf for Huggingface and sp for spacy.
 
 ```
-Einar Jónsson was visited by Guðrún .	I-PER I-PER O O O I-PER O	hf
-Anna got a gift from Pétur , Páll and Alexei .	I-PER O O O O I-PER O I-PER O I-PER O	hf
+Notice that the taggers do not produce the same tag sets.
+
+## Unifying tag sets
+To be able to filter and/or align NE markers we need to unify the tag sets.
+```
+mt normalize example.en.ner example.en.ner-norm
+mt normalize example.is.ner example.is.ner-norm
 ```
 
-Note the different tagsets used, this is dealt with by the aligner.
-
-## Embedding and unifying tags
-
-In order to be able to train and NMT system on the NER tagged data we embed the NEs markers into the sentences, detokenizes and unify the tag sets.
-
+We can also embed the NEs directly into the sentences:
 ```
-lang=en
-python ner_extracter.py --input testdata/example.ner.$lang --output testdata/example.ner-ext.$lang --embed_tags
-# Running the command also displays the number of labels parsed.
-cat testdata/example.ner-ext.$lang
-hf	<P>Einar Jónsson</P> was visited by <P>Guðrún</P> .
-hf	<P>Anna</P> got a gift from <P>Pétur</P> , <P>Páll</P> and <P>Alexei</P> .
+mt embed tests/data/example.is example.is.ner -
+mt embed tests/data/example.en example.en.ner -
 ```
 
+## Filtering based on NEs
+Filtering is based on parallel data and works as follows
+- Lines with no NEs are removed
+- NE tag sets are normalized (like above)
+- NE tags which are not Organization, Location or Person are filtered out
+- Lines with unequal number of tags in each group are filtered out
+- Then all the remaining lines are shuffled.
+
+```bash
+mt filter-text-by-ner tests/data/example.is tests/data/example.en example.is.ner example.en.ner example.is.filtered example.en.filtered example.is.ner.filtered example.en.ner.filtered
+# Check the results
+cat example.??*.filtered
+Guðrún visited Einars Jónssonar.
+Anna got a gift from Pétri, Páli and Alexei.
+P:0:6 P:15:31
+P:0:4 P:21:26 P:28:32 P:37:43
+Guðrún fór í heimsókn til Einars Jónssonar.
+Anna fékk gjöf frá Alexei, Pétri og Páli.
+P:0:6 P:26:42
+P:0:4 P:19:25 P:27:32 P:36:40
+```
+Only two lines remain.
+
+## Correction/Substition
+In our example, the English sentences is considered to be incorrect translations of the Icelandic sentences. They are incorrect because the names are not in nominative case. We will now correct this.
+```
+mt correct example.is.filtered example.en.filtered example.is.ner.filtered example.en.ner.filtered example.is.corrected --to_nominative_case
+# example.is.corrected
+Guðrún visited Einar Jónsson.
+Anna got a gift from Alexei, Pétur and Páll.
+```
+Additionally, a dictionary can be provided to make manually corrections. The dictionary is used as a first correction resort.
+
+```
+mt correct example.is.filtered example.en.filtered example.is.ner.filtered example.en.ner.filtered example.is.corrected --to_nominative_case --corrections_tsv tests/data/corrections.tsv
+# example.is.corrected
+Guðrún visited Einar Jónsson.
+Anna got a gift from Alexei Sergov, Pétur and Páll.
+```
 ## MT evaluation
 
 To evaluate an MT system w.r.t. BLEU run:
