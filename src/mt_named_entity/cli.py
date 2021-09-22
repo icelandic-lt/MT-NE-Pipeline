@@ -1,12 +1,13 @@
 import logging
 from collections import Counter
 from random import sample, shuffle
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 import click
 from tqdm import tqdm
 
-from mt_named_entity.align import align_markers_by_jaro_winkler
+from mt_named_entity.align import align_markers_by_jaro_winkler, align_markers_by_order
+from mt_named_entity.correct import Corrector, correct_line
 
 from .embed import embed_ner_tags, extract_ner_tags
 from .eval import ALIGNED, ALL_METRICS, DISTANCE, MATCHES, UPPER_BOUND, get_metrics
@@ -167,16 +168,28 @@ def filter_text_by_ner(
         src_entities_to_write.append(sent_entities[0])
         tgt_entities_to_write.append(sent_entities[1])
 
-
-    assert len(src_text_to_write) == len(tgt_text_to_write), f"The source text and tgt should have the same lengths. src={len(src_text_to_write)}, tgt={len(tgt_text_to_write)}"
-    assert len(src_entities_to_write) == len(tgt_entities_to_write), f"The source NEs and target should have the same lengths. src_ne={len(src_entities_to_write)}, tgt_ne={tgt_entities_to_write}"
-    assert len(src_entities_to_write) == len(src_text_to_write), f"The source text and NEs should have the same lengths. src_text={len(src_text_to_write)}, src_ne={len(src_entities_to_write)}"
+    assert len(src_text_to_write) == len(
+        tgt_text_to_write
+    ), f"The source text and tgt should have the same lengths. src={len(src_text_to_write)}, tgt={len(tgt_text_to_write)}"
+    assert len(src_entities_to_write) == len(
+        tgt_entities_to_write
+    ), f"The source NEs and target should have the same lengths. src_ne={len(src_entities_to_write)}, tgt_ne={tgt_entities_to_write}"
+    assert len(src_entities_to_write) == len(
+        src_text_to_write
+    ), f"The source text and NEs should have the same lengths. src_text={len(src_text_to_write)}, src_ne={len(src_entities_to_write)}"
     length = len(src_text_to_write)
     indices = list(range(length))
     shuffle(indices)
     for idx in indices:
-        sent_src_text, sent_tgt_text, sent_src_entities, sent_tgt_entities = src_text_to_write[idx], tgt_text_to_write[idx], src_entities_to_write[idx], tgt_entities_to_write[idx]
-        assert len(sent_src_entities) == len(sent_tgt_entities), f"The source NEs and target NEs should have the same lengths. src_ne={len(sent_src_entities)}, tgt_ne={len(sent_tgt_entities)}"
+        sent_src_text, sent_tgt_text, sent_src_entities, sent_tgt_entities = (
+            src_text_to_write[idx],
+            tgt_text_to_write[idx],
+            src_entities_to_write[idx],
+            tgt_entities_to_write[idx],
+        )
+        assert len(sent_src_entities) == len(
+            sent_tgt_entities
+        ), f"The source NEs and target NEs should have the same lengths. src_ne={len(sent_src_entities)}, tgt_ne={len(sent_tgt_entities)}"
         assert sent_src_text.strip() != ""
         assert sent_tgt_text.strip() != ""
         src_text_out.write(sent_src_text)
@@ -199,15 +212,20 @@ def statistics(entities_file):
         click.echo(f"{key}\t{value}")
 
 
+def read_ner_tags(file_stream: Iterable[str]) -> List[List[NERTag]]:
+    """Read the NER tags from a file."""
+    return [[NERTag.from_str(a_str) for a_str in line.strip().split(" ") if a_str != ""] for line in file_stream]
+
+
 @cli.command()
 @click.argument("entities_file", type=click.File("r"))
 @click.argument("entities_file_normalized", type=click.File("w"))
 def normalize(entities_file, entities_file_normalized):
     """Normalize the entity names."""
     log.info(f"Normalizing")
-    for line in entities_file:
-        entities = [NERTag.from_str(a_str) for a_str in line.strip().split(" ") if a_str != ""]
-        normalized_entities = map_named_entity_types(entities)
+    entities = read_ner_tags(entities_file)
+    for sent_entities in entities:
+        normalized_entities = map_named_entity_types(sent_entities)
         entities_file_normalized.write(" ".join([str(tag) for tag in normalized_entities]) + "\n")
 
 
@@ -221,19 +239,12 @@ def eval(ref_text, sys_text, ref_entities, sys_entities, tsv):
     sys_text = [line.strip() for line in sys_text]
     ref_text = [line.strip() for line in ref_text]
     # log.info(f"BLEU score: {sacrebleu.corpus_bleu(sys_text, [ref_text])}")
-    # Read the NER tags and map them to NERMarkers
-    def read_markers(entities, text) -> List[List[NERMarker]]:
-        all_markers = []
-        for idx, entities_line in enumerate(entities):
-            entities = [NERTag.from_str(a_str) for a_str in entities_line.strip().split(" ") if a_str != ""]
-            all_markers.append([NERMarker.from_tag(tag, text[idx]) for tag in entities])
-        return all_markers
-
-    ref_entities = read_markers(ref_entities, ref_text)
-    sys_entities = read_markers(sys_entities, sys_text)
+    ref_entities = to_ner_markers(read_ner_tags(ref_entities), ref_text)
+    sys_entities = to_ner_markers(read_ner_tags(sys_entities), sys_text)
     metrics: Dict[str, Dict[str, float]] = dict()
     alignments = [
-        align_markers_by_jaro_winkler(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)
+        align_markers_by_jaro_winkler(ref_marker, sys_marker)
+        for ref_marker, sys_marker in zip(ref_entities, sys_entities)
     ]
     if alignments:
         for group in ALL_GROUPS:
@@ -274,9 +285,7 @@ def log_metric_values(metrics):
             log.info(f"{group}")
             log.info(f"Alignment count: {metrics[group][ALIGNED]}")
             log.info(f"Alignment coverage: {metrics[group][ALIGNED]/metrics[group][UPPER_BOUND]}")
-            log.info(
-                f"Average alignment distance: {metrics[group][DISTANCE]/metrics[group][ALIGNED]}"
-            )
+            log.info(f"Average alignment distance: {metrics[group][DISTANCE]/metrics[group][ALIGNED]}")
             log.info(f"Accuracy (exact match): {metrics[group][MATCHES]/metrics[group][ALIGNED]}")
             print(metrics[group][ALIGNED])
             print(metrics[group][ALIGNED] / metrics[group][UPPER_BOUND])
@@ -306,6 +315,14 @@ def combine_results(result_file, tsv):
     else:
         log_metric_values(metrics)
 
+
+def to_ner_markers(entities: List[List[NERTag]], text: List[str]) -> List[List[NERMarker]]:
+    all_markers = []
+    for idx, entities_line in enumerate(entities):
+        all_markers.append([NERMarker.from_tag(tag, text[idx]) for tag in entities_line])
+    return all_markers
+
+
 @cli.command()
 @click.argument("ref_text", type=click.File("r"))
 @click.argument("sys_text", type=click.File("r"))
@@ -317,21 +334,15 @@ def show_examples(ref_text, sys_text, ref_entities, sys_entities, tag):
     sys_text = [line.strip() for line in sys_text]
     ref_text = [line.strip() for line in ref_text]
     # Read the NER tags and map them to NERMarkers
-    def read_markers(entities, text) -> List[List[NERMarker]]:
-        all_markers = []
-        for idx, entities_line in enumerate(entities):
-            entities = [NERTag.from_str(a_str) for a_str in entities_line.strip().split(" ") if a_str != ""]
-            all_markers.append([NERMarker.from_tag(tag, text[idx]) for tag in entities])
-        return all_markers
 
-    ref_entities = read_markers(ref_entities, ref_text)
-    sys_entities = read_markers(sys_entities, sys_text)
+    ref_entities = to_ner_markers(read_ner_tags(ref_entities), ref_text)
+    sys_entities = to_ner_markers(read_ner_tags(sys_entities), sys_text)
     alignments = [
-        align_markers_by_jaro_winkler(ref_marker, sys_marker) for ref_marker, sys_marker in zip(ref_entities, sys_entities)
+        align_markers_by_jaro_winkler(ref_marker, sys_marker)
+        for ref_marker, sys_marker in zip(ref_entities, sys_entities)
     ]
     group_alignments = [
-        [alignment for alignment in s_alignment if alignment.marker_1.tag == tag]
-        for s_alignment in alignments
+        [alignment for alignment in s_alignment if alignment.marker_1.tag == tag] for s_alignment in alignments
     ]
     assert len(group_alignments) == len(ref_text)
     for idx, s_alignment in enumerate(alignments):
@@ -341,6 +352,56 @@ def show_examples(ref_text, sys_text, ref_entities, sys_entities, tag):
                     print(alignment)
                     print(ref_text[idx])
                     print(sys_text[idx])
+
+
+@cli.command()
+@click.argument("ref_text", type=click.File("r"))
+@click.argument("sys_text", type=click.File("r"))
+@click.argument("ref_entities", type=click.File("r"))
+@click.argument("sys_entities", type=click.File("r"))
+@click.argument("sys_text_corrected", type=click.File("w"))
+@click.option(
+    "--to_nominative_case/--no_to_nominative_case",
+    default=False,
+    help="Attempt to convert named-entities to nominative case. Only works if NE is in BÍN. Works best if reference is Icelandic and system is English.",
+)
+@click.option(
+    "--corrections_tsv",
+    type=str,
+    default=None,
+    help="A filepath to a tsv with two columns containing corrections. First column is to match reference NE, second column is used to replace system NE.",
+)
+def correct(ref_text, sys_text, ref_entities, sys_entities, sys_text_corrected, to_nominative_case, corrections_tsv):
+    """Correct the sys_text named entities according to options specified"""
+    sys_text = [line.strip() for line in sys_text]
+    ref_text = [line.strip() for line in ref_text]
+    # Read the NER tags and map them to NERMarkers
+    ref_markers = to_ner_markers(read_ner_tags(ref_entities), ref_text)
+    sys_markers = to_ner_markers(read_ner_tags(sys_entities), sys_text)
+    corrections = {}
+    if corrections_tsv:
+        corrections = read_corrections(corrections_tsv)
+    correcter = Corrector(should_correct_to_nomintaive_case=to_nominative_case, corrections=corrections)
+    corrected_sys_text = []
+    for ref_line, sys_line, ref_marker, sys_marker in zip(ref_text, sys_text, ref_markers, sys_markers):
+        corrected_sys_line = correct_line(ref_line, sys_line, ref_marker, sys_marker, correcter)
+        corrected_sys_text.append(corrected_sys_line)
+    sys_text_corrected.write("\n".join(corrected_sys_text))
+
+
+def read_corrections(filepath: str) -> Dict[str, str]:
+    corrections = {}
+    with open(filepath, "r") as corrections_file:
+        for line in corrections_file:
+            line = line.strip()
+            if line == "":
+                continue
+            parts = line.split("\t")
+            if len(parts) != 2:
+                raise ValueError(f"Invalid line in corrections file: {line}")
+            corrections[parts[0]] = parts[1]
+    return corrections
+
 
 if __name__ == "__main__":
     cli()
