@@ -11,19 +11,44 @@ log = logging.getLogger(__name__)
 
 
 class Corrector:
+    """Applies corrections to NERMarkers and tracks statistics."""
+
+    STATISTICS_DICTIONARY_KEY = "successful_dictionary_lookup"
+    STATISTICS_NOMINATIVE_CASE_KEY = "nominative_case_inflections"
+
     def __init__(self, should_correct_to_nomintaive_case: bool, corrections: Optional[Dict[str, str]] = None) -> None:
         self.b = Bin()
         self.should_correct_icelandic_to_nominative_case = should_correct_to_nomintaive_case
         self.corrections = corrections if corrections else {}
+        self.correction_statistics = {self.STATISTICS_DICTIONARY_KEY: 0, self.STATISTICS_NOMINATIVE_CASE_KEY: 0}
 
-    def __call__(self, src_text: str, tgt_text: str, src_ne: str, tgt_ne: str) -> Optional[str]:
+    def __call__(
+        self, src_text: str, tgt_text: str, src_ner_marker: NERMarker, tgt_ner_marker: NERMarker
+    ) -> Optional[str]:
         """Return the corrected marker_2 in the alignment. If no change is applied, return None."""
         # First we check if the src_ne is in the corrections dict and if so, we return the value
-        if src_ne in self.corrections:
-            return self.corrections[src_ne]
-        # Otherwise we check if we should attempt to inflect the marker_1 to nominative case.
-        if self.should_correct_icelandic_to_nominative_case:
-            return self.correct_icelandic_to_nominative_case(src_ne)
+        if src_ner_marker.named_entity in self.corrections:
+            self.correction_statistics[self.STATISTICS_DICTIONARY_KEY] += 1
+            log.debug(f"Using corrections dictionary: {tgt_ner_marker.named_entity} -> {src_ner_marker.named_entity}")
+            return self.corrections[src_ner_marker.named_entity]
+        # Otherwise we apply rules based on the tag
+        if src_ner_marker.tag == "L":
+            pass
+        elif src_ner_marker.tag == "O":
+            pass
+        elif src_ner_marker.tag == "P":
+            # Otherwise we check if we should attempt to inflect the source_marker to nominative case.
+            if self.should_correct_icelandic_to_nominative_case:
+                correction = self.correct_icelandic_to_nominative_case(src_ner_marker.named_entity)
+                if correction is not None and correction != tgt_ner_marker.named_entity:
+                    self.correction_statistics[self.STATISTICS_NOMINATIVE_CASE_KEY] += 1
+                    log.debug(
+                        f"Using inflection (NF) for source NE: {src_ner_marker.named_entity} -> {correction} instead of target: {tgt_ner_marker.named_entity}"
+                    )
+                    return correction
+            return None
+        else:
+            raise ValueError(f"Unknown tag: {src_ner_marker.tag}")
         return None
 
     def correct_icelandic_to_nominative_case(self, src_ne: str) -> Optional[str]:
@@ -38,9 +63,13 @@ class Corrector:
             else:
                 # Otherwise we add the original word
                 corrected_parts.append(src_ne_part)
-        return " ".join(corrected_parts)
+        corrected_ne = " ".join(corrected_parts)
+        if corrected_ne != src_ne:
+            return corrected_ne
+        else:
+            return None
 
-    def _inflect_using_bin(self, src_ne: str) -> Optional[str]:
+    def _inflect_using_bin(self, src_ne: str, case: str = "NF", assume_uppercase=True) -> Optional[str]:
         """Inflect the src_ne using BinPackage. Return None if no change"""
 
         def get_by_best_einkunn(m: KsnidList) -> KsnidList:
@@ -49,7 +78,8 @@ class Corrector:
                 filtered = [match for match in m if match.einkunn == einkunn]
                 if len(filtered) > 0:
                     return filtered
-            raise ValueError(f"No einkunn available: {m}")
+            log.warning(f"No einkunn available: {m}")
+            return m
 
         def get_by_best_malsnid(m: KsnidList) -> KsnidList:
             # We prefer results with no malsnid.
@@ -57,7 +87,8 @@ class Corrector:
                 filtered = [match for match in m if match.malsnid == malsnid]
                 if len(filtered) > 0:
                     return filtered
-            raise ValueError(f"No malsnid available: {m}")
+            log.warning(f"No malsnid available: {m}")
+            return m
 
         def get_by_birting(m: KsnidList) -> KsnidList:
             # We prefer results with no birting.
@@ -65,18 +96,29 @@ class Corrector:
                 filtered = [match for match in m if match.birting == birting]
                 if len(filtered) > 0:
                     return filtered
-            raise ValueError(f"No birting available: {m}")
+            log.warning(f"No birting available: {m}")
+            return m
 
-        m = self.b.lookup_variants(src_ne, "no", ("NF"))
+        def get_by_et(m: KsnidList) -> KsnidList:
+            # We prefer results which are singular (ET).
+            filtered = [match for match in m if "ET" in match.mark]
+            if len(filtered) > 0:
+                return filtered
+            log.warning(f"No ET available: {m}")
+            return m
+
+        m = self.b.lookup_variants(src_ne, "no", (case))
+        # Filter out results that do not start uppercased.
+        m = [match for match in m if match.bmynd[0].isupper()]
         if not m:
             return None
-
-        if len(m) == 1:
-            return m[0].bmynd
         # We check if their forms actually differ.
         word_forms = set(match.bmynd for match in m)
         if len(word_forms) == 1:
             return word_forms.pop()
+        # If our form is in there, we just assume it is correct and return nothing.
+        if src_ne in word_forms:
+            return None
         # Their forms differ, so we need to do some heuristic filtering to selected the most "accepted one"
         m_best_einkunn = get_by_best_einkunn(m)
         if len(m_best_einkunn) == 1:
@@ -90,7 +132,18 @@ class Corrector:
         if len(m_best_malsnid) == 1:
             # We have a single match with malsnid.
             return m_best_malsnid[0].bmynd
-        raise ValueError(f"Multiple word forms for {src_ne}: {word_forms}, matches={m}")
+        # We default to singular-form if we have no other choice.
+        m_et = get_by_et(m)
+        if len(m_et) == 1:
+            # We have a single match with ET.
+            return m_et[0].bmynd
+        if len(m_et) == 0:
+            # We have no suggestions. Return nothing
+            return None
+
+        # Otherwise we cannot make a decision
+        log.warning(f"Multiple word forms for {src_ne}: {word_forms}, matches={m}")
+        return None
 
 
 def correct_line(
@@ -105,7 +158,7 @@ def correct_line(
     # Then we correct the source and target lines by removing the wrong entities.
     corrected_alignments = []
     for alignment in alignments:
-        correction = corrector(src_line, tgt_line, alignment.marker_1.named_entity, alignment.marker_2.named_entity)
+        correction = corrector(src_line, tgt_line, alignment.marker_1, alignment.marker_2)
         if correction is not None:
             corrected_alignments.append((correction, alignment))
     # We order the alignments by the start_idx of the target_markers, descending.

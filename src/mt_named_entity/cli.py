@@ -387,6 +387,8 @@ def correct(ref_text, sys_text, ref_entities, sys_entities, sys_text_corrected, 
         corrected_sys_line = correct_line(ref_line, sys_line, ref_marker, sys_marker, correcter)
         corrected_sys_text.append(corrected_sys_line)
     sys_text_corrected.write("\n".join(corrected_sys_text))
+    log.info("Correction statistics")
+    log.info(correcter.correction_statistics)
 
 
 def read_corrections(filepath: str) -> Dict[str, str]:
