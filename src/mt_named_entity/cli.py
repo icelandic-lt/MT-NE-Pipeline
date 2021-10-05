@@ -21,8 +21,12 @@ METRIC_FIELDS = [f"{group}_{metric}" for group in ALL_GROUPS for metric in ALL_M
 
 
 @click.group()
-def cli():
-    logging.basicConfig(level=logging.INFO)
+@click.option("--debug/--no_debug", default=False)
+def cli(debug):
+    if debug:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
 
 
 @cli.command()
@@ -160,13 +164,14 @@ def filter_text_by_ner(
         if not sent_entities[0] or not sent_entities[1]:
             continue
         # We then filter out sentences which do not have the same number of entity types.
-        if not filter_same_number_of_entity_types(*sent_entities):
+        src_entities, tgt_entities = filter_same_number_of_entity_types(*sent_entities)
+        if not src_entities or not tgt_entities:
             continue
         # The newline is still present.
         src_text_to_write.append(sent_src_text)
         tgt_text_to_write.append(sent_tgt_text)
-        src_entities_to_write.append(sent_entities[0])
-        tgt_entities_to_write.append(sent_entities[1])
+        src_entities_to_write.append(src_entities)
+        tgt_entities_to_write.append(tgt_entities)
 
     assert len(src_text_to_write) == len(
         tgt_text_to_write

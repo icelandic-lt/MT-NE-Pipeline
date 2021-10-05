@@ -71,7 +71,7 @@ def align_markers_by_jaro_winkler(ner_markers_1: List[NERMarker], ner_markers_2:
 
 def align_markers_by_order(ner_markers_1: List[NERMarker], ner_markers_2: List[NERMarker]) -> List[NERAlignment]:
     """Aligns NERTags based on order."""
-    assert filter_same_number_of_entity_types(ner_markers_1, ner_markers_2), "Markers must be well filtered." # type: ignore
+    ner_markers_1, ner_markers_2 = filter_same_number_of_entity_types(ner_markers_1, ner_markers_2) # type: ignore
     # We sort the NERMarkers by their tag.
     ner_markers_1 = sorted(ner_markers_1, key=lambda x: x.tag)
     ner_markers_2 = sorted(ner_markers_2, key=lambda x: x.tag)

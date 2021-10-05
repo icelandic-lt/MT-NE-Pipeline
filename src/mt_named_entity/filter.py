@@ -1,4 +1,4 @@
-from typing import Counter, List
+from typing import Counter, List, Tuple
 
 from mt_named_entity.ner import NERTag
 
@@ -51,16 +51,16 @@ ALL_TAGS = [PER, LOC, ORG, MISC, DATE, TIME, MON, PERC]
 ALLOWED_TAGS = {PER, LOC, ORG}
 
 
-def filter_same_number_of_entity_types(src_NEs: List[NERTag], tgt_NEs: List[NERTag]) -> bool:
-    """Filter translations by named entities types count. If the src and tgt do not contain the same number of NEs types it is rejected."""
-    if len(src_NEs) != len(tgt_NEs):
-        return False
+def filter_same_number_of_entity_types(src_NEs: List[NERTag], tgt_NEs: List[NERTag]) -> Tuple[List[NERTag], List[NERTag]]:
+    """Filter translations by named entities types count. If the src and tgt do not contain the same number of NEs types for some type, that type is filtered out."""
     src_counter = Counter([tag.tag for tag in src_NEs])
     tgt_counter = Counter([tag.tag for tag in tgt_NEs])
-    if src_counter != tgt_counter:
-        return False
-    return True
-
+    # All the tags that are in both counters
+    allowed_tags = set(src_counter.keys()) & set(tgt_counter.keys())
+    # We then check the number of occurrences of each tag in the src and tgt
+    src_NEs = [tag for tag in src_NEs if tag.tag in allowed_tags and src_counter[tag.tag] == tgt_counter[tag.tag]]
+    tgt_NEs = [tag for tag in tgt_NEs if tag.tag in allowed_tags and src_counter[tag.tag] == tgt_counter[tag.tag]]
+    return src_NEs, tgt_NEs
 
 def map_named_entity_types(ner_tags: List[NERTag]) -> List[NERTag]:
     """Map named entities types. We map different system NE markers to a uniform format using TAG_MAPPER."""
