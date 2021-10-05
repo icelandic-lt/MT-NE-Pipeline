@@ -36,6 +36,8 @@ class Corrector:
             pass
         elif src_ner_marker.tag == "O":
             pass
+        elif src_ner_marker.tag == "M":
+            pass
         elif src_ner_marker.tag == "P":
             # Otherwise we check if we should attempt to inflect the source_marker to nominative case.
             if self.should_correct_icelandic_to_nominative_case:
@@ -109,16 +111,14 @@ class Corrector:
 
         m = self.b.lookup_variants(src_ne, "no", (case))
         # Filter out results that do not start uppercased.
-        m = [match for match in m if match.bmynd[0].isupper()]
+        if assume_uppercase:
+            m = [match for match in m if match.bmynd[0].isupper()]
         if not m:
             return None
         # We check if their forms actually differ.
         word_forms = set(match.bmynd for match in m)
         if len(word_forms) == 1:
             return word_forms.pop()
-        # If our form is in there, we just assume it is correct and return nothing.
-        if src_ne in word_forms:
-            return None
         # Their forms differ, so we need to do some heuristic filtering to selected the most "accepted one"
         m_best_einkunn = get_by_best_einkunn(m)
         if len(m_best_einkunn) == 1:
