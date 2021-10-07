@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Generator, Iterable, List, Tuple
@@ -15,6 +16,7 @@ from tokenizer.tokenizer import split_into_sentences
 NER_RESULTS = Generator[Tuple[List[str], List[str], str], None, None]
 log = logging.getLogger(__name__)
 
+MULTIPLE_SPACES = re.compile(r"\s+")
 
 @dataclass(frozen=True)
 class NERTag:
@@ -154,7 +156,15 @@ class IS_NER:
 
         start_idx = 0
         additional_length = 0
+        # Some text can be malformed, so we fix it here.
+        line = line.replace("\xad", "")
+        line = line.replace(u'\xa0', u' ')
+        line = MULTIPLE_SPACES.sub(" ", line)
+        if len(tokens) == 0:
+            return tags
         for token, label in zip(tokens, labels):
+            if token == label and token == "":
+                continue
             found_idx = line.find(token, start_idx, start_idx + len(token) + extra_length_for_spaces)
             if found_idx == -1:
                 # The tokenizer actually coalesces '% 44' to a single token, so we have to check for that.
@@ -170,8 +180,10 @@ class IS_NER:
                         found_idx -= 2
             end_idx = found_idx + len(token) + additional_length
             if label != "O":
-                assert found_idx < end_idx, f"Found end index before start index: {found_idx}, {end_idx}, {line}"
-                tags.append(NERTag(label, found_idx, end_idx))
+                if found_idx < end_idx:
+                    tags.append(NERTag(label, found_idx, end_idx))
+                else:
+                    raise ValueError(f"Found end index before start index: {found_idx}, {end_idx}, {line}")
             start_idx = end_idx
             additional_length = 0
         return tags
