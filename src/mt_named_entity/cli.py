@@ -1,4 +1,5 @@
 import logging
+import re
 from collections import Counter
 from random import sample, shuffle
 from typing import Dict, Iterable, List
@@ -9,7 +10,7 @@ from tqdm import tqdm
 from mt_named_entity.align import align_markers_by_jaro_winkler, align_markers_by_order
 from mt_named_entity.correct import Corrector, correct_line
 
-from .embed import embed_ner_tags, extract_ner_tags
+from .embed import embed_ner_entity, embed_ner_tags, extract_ner_tags
 from .eval import ALIGNED, ALL_METRICS, DISTANCE, MATCHES, UPPER_BOUND, get_metrics
 from .filter import ALL_TAGS, filter_named_entity_types, filter_same_number_of_entity_types, map_named_entity_types
 from .ner import EN_NER, IS_NER, NERMarker, NERTag
@@ -41,6 +42,21 @@ def shorten(inp, out, tokens):
         if len(line.strip().split(" ")) > tokens:
             continue
         out.write(line)
+
+@cli.command()
+@click.argument("inp", type=click.File("r"))
+@click.argument("out", type=click.File("w"))
+def clean(inp, out):
+    """Cleans lines in a file by removing multiple spaces and bad characters."""
+    log.info(f"Cleaning file")
+    inp = tqdm(inp)
+    MULTIPLE_SPACES = re.compile(r" +")
+    for line in inp:
+        line = line.strip()
+        line = line.replace("\xad", "")
+        line = line.replace(u'\xa0', u' ')
+        line = MULTIPLE_SPACES.sub(" ", line)
+        out.write(line + "\n")
 
 
 @cli.command()
@@ -106,6 +122,25 @@ def embed(original, ner_entities, output):
         sent_embed = embed_ner_tags(sent, sent_ner_tags)
         output.write(sent_embed + "\n")
     log.info(f"Embedding done")
+
+
+@cli.command()
+@click.argument("original", type=click.File("r"))
+@click.argument("ner_entities", type=click.File("r"))
+@click.argument("output", type=click.File("w"))
+def unique_ner_entities(original, ner_entities, output):
+    """Return all unique NER entities found in the original text."""
+    log.info(f"Finding unique NER entities")
+    original = tqdm(original)
+    ner_entities = read_ner_tags(ner_entities)
+    all_entities = set()
+    for sent_ner_tags, sent_original in zip(ner_entities, original):
+        sent = sent_original.strip()
+        all_entities.update(embed_ner_entity(sent, ner_tag) for ner_tag in sent_ner_tags)
+
+    for entity in sorted(all_entities):
+        output.write(entity + "\n")
+    log.info(f"Done")
 
 
 @cli.command()

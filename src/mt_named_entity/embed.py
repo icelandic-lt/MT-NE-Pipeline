@@ -58,15 +58,22 @@ ENTITY_MARKERS_END = re.compile(f"</[{'|'.join(TAGS)}]+>")
 
 ENTITY_MARKERS = re.compile(f"</?[{'|'.join(TAGS)}]+>")
 
+
 def embed_ner_tags(sentence: str, ner_tags: List[NERTag]) -> str:
     # Reverse the ner_tags, so we start at the end of the sentence.
-    ner_tags = reversed(ner_tags) # type: ignore
+    ner_tags = reversed(ner_tags)  # type: ignore
     for ner_tag in ner_tags:
-        entity = sentence[ner_tag.start_idx : ner_tag.end_idx]
-        embedded_tag = TAG_MAPPER[ner_tag.tag]
-        embedded_entity = f"<{embedded_tag}>{entity}</{embedded_tag}>"
+        embedded_entity = embed_ner_entity(sentence, ner_tag)
         sentence = sentence[: ner_tag.start_idx] + embedded_entity + sentence[ner_tag.end_idx :]
     return sentence
+
+
+def embed_ner_entity(sentence: str, ner_tag: NERTag) -> str:
+    entity = sentence[ner_tag.start_idx : ner_tag.end_idx]
+    embedded_tag = TAG_MAPPER[ner_tag.tag] if ner_tag.tag not in TAGS else ner_tag.tag
+    embedded_entity = f"<{embedded_tag}>{entity}</{embedded_tag}>"
+    return embedded_entity
+
 
 def extract_ner_tags(sentence: str) -> Tuple[str, List[NERTag]]:
     """Extracts and removes the NER tags from the given sentence."""
@@ -88,8 +95,8 @@ def extract_ner_tags(sentence: str) -> Tuple[str, List[NERTag]]:
         if start_tag != end_tag:
             raise ValueError(f"Start tag {start_tag} and end tag {end_tag} do not match.")
         entity = sentence[start_match.end() : end_match.start()]
-        corrected_end_idx = end_idx - 3 - 4 # -3 for the <X> and -4 for the </X>
-        return (sentence[: start_idx] + entity + sentence[end_idx :], NERTag(start_tag, start_idx, corrected_end_idx))
+        corrected_end_idx = end_idx - 3 - 4  # -3 for the <X> and -4 for the </X>
+        return (sentence[:start_idx] + entity + sentence[end_idx:], NERTag(start_tag, start_idx, corrected_end_idx))
 
     # Reverse the ner_tags, so we start at the end of the sentence.
     tags = []
@@ -109,5 +116,3 @@ def extract_ner_tags(sentence: str) -> Tuple[str, List[NERTag]]:
         print(tags)
     # TODO: Clean up all remaining <X> and </X> tags and correct the idxs of the tags based on the number of deletions.
     return sentence, tags
-       
-

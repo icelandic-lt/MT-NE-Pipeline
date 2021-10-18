@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Generator, Iterable, List, Tuple
@@ -10,13 +9,11 @@ import torch
 from flair.data import Sentence
 from flair.models import SequenceTagger
 from greynirseq.cli.greynirseq import NER
-from tokenizer import tokenize
 from tokenizer.tokenizer import split_into_sentences
 
 NER_RESULTS = Generator[Tuple[List[str], List[str], str], None, None]
 log = logging.getLogger(__name__)
 
-MULTIPLE_SPACES = re.compile(r"\s+")
 
 @dataclass(frozen=True)
 class NERTag:
@@ -131,7 +128,7 @@ class IS_NER:
                     return IS_NER.join_ner_tags(ner_tags)
 
                 prev_ner_tag = ner_tags[idx - 1]
-                # If the previous tag is B-<tag1> but we read I-<tag2> we map it to B-<tag1>I-<tag1> 
+                # If the previous tag is B-<tag1> but we read I-<tag2> we map it to B-<tag1>I-<tag1>
                 if not prev_ner_tag.tag.endswith(ner_tag.tag[2:]):
                     log.error(f"Found I- tag with different ending than B- tag: {ner_tag.tag}, {prev_ner_tag.tag}")
                     log.error("Changing the I-tag to be consistent with the B-tag.")
@@ -156,10 +153,6 @@ class IS_NER:
 
         start_idx = 0
         additional_length = 0
-        # Some text can be malformed, so we fix it here.
-        line = line.replace("\xad", "")
-        line = line.replace(u'\xa0', u' ')
-        line = MULTIPLE_SPACES.sub(" ", line)
         if len(tokens) == 0:
             return tags
         for token, label in zip(tokens, labels):
