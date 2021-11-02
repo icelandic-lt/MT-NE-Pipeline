@@ -23,11 +23,13 @@ METRIC_FIELDS = [f"{group}_{metric}" for group in ALL_GROUPS for metric in ALL_M
 
 @click.group()
 @click.option("--debug/--no_debug", default=False)
-def cli(debug):
-    if debug:
-        logging.basicConfig(level=logging.DEBUG)
+@click.option("--log_file", default=None)
+def cli(debug, log_file):
+    log_level = logging.DEBUG if debug else logging.INFO
+    if log_file is not None:
+        logging.basicConfig(filename=log_file, level=log_level)
     else:
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=log_level)
 
 
 @cli.command()
