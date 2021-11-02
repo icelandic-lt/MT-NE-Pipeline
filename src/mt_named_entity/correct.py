@@ -82,6 +82,15 @@ class Corrector:
                     return filtered
             log.warning(f"No einkunn available: {m}")
             return m
+        
+        def get_by_best_hluti(m: KsnidList) -> KsnidList:
+            # We prefer to use ism (person name) over örn (place name) and then bær (town name)
+            for hluti in ("ism", "örn", "bær"):
+                filtered = [match for match in m if match.hluti == hluti]
+                if len(filtered) > 0:
+                    return filtered
+            log.warning(f"No hluti available: {m}")
+            return m
 
         def get_by_best_malsnid(m: KsnidList) -> KsnidList:
             # We prefer results with no malsnid.
@@ -120,6 +129,10 @@ class Corrector:
         if len(word_forms) == 1:
             return word_forms.pop()
         # Their forms differ, so we need to do some heuristic filtering to selected the most "accepted one"
+        m_best_hluti = get_by_best_hluti(m)
+        if len(m_best_hluti) == 1:
+            # We have a single match with einkunn 1.
+            return m_best_hluti[0].bmynd
         m_best_einkunn = get_by_best_einkunn(m)
         if len(m_best_einkunn) == 1:
             # We have a single match with einkunn 1.

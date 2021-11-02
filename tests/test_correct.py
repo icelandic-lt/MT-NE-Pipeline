@@ -18,3 +18,8 @@ def test_corrector_hildur():
     corrector = Corrector(should_correct_to_nomintaive_case=True)
     result = corrector.correct_icelandic_to_nominative_case("Hildar Sigurðardóttur")
     assert result == "Hildur Sigurðardóttir"
+
+def test_corrector_hluti():
+    corrector = Corrector(should_correct_to_nomintaive_case=True)
+    result = corrector._inflect_using_bin("Hólm")
+    assert result == "Hólm"
