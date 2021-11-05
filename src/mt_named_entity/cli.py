@@ -8,7 +8,7 @@ import click
 from tqdm import tqdm
 
 from mt_named_entity.align import align_markers_by_jaro_winkler, align_markers_by_order
-from mt_named_entity.correct import Corrector, correct_line
+from mt_named_entity.correct import CorrectionResult, Corrector, correct_line
 
 from .embed import embed_ner_entity, embed_ner_tags, extract_ner_tags
 from .eval import ALIGNED, ALL_METRICS, DISTANCE, MATCHES, UPPER_BOUND, get_metrics
@@ -45,6 +45,7 @@ def shorten(inp, out, tokens):
             continue
         out.write(line)
 
+
 @cli.command()
 @click.argument("inp", type=click.File("r"))
 @click.argument("out", type=click.File("w"))
@@ -56,7 +57,7 @@ def clean(inp, out):
     for line in inp:
         line = line.strip()
         line = line.replace("\xad", "")
-        line = line.replace(u'\xa0', u' ')
+        line = line.replace("\xa0", " ")
         line = MULTIPLE_SPACES.sub(" ", line)
         out.write(line + "\n")
 
@@ -413,7 +414,22 @@ def show_examples(ref_text, sys_text, ref_entities, sys_entities, tag):
     default=None,
     help="A filepath to a tsv with two columns containing corrections. First column is to match reference NE, second column is used to replace system NE.",
 )
-def correct(ref_text, sys_text, ref_entities, sys_entities, sys_text_corrected, to_nominative_case, corrections_tsv):
+@click.option(
+    "--corrections_idxs",
+    type=str,
+    default=None,
+    help="A filepath to save the line idxs of verified corrected NEs in TGT.",
+)
+def correct(
+    ref_text,
+    sys_text,
+    ref_entities,
+    sys_entities,
+    sys_text_corrected,
+    to_nominative_case,
+    corrections_tsv,
+    corrections_idxs,
+):
     """Correct the sys_text named entities according to options specified"""
     sys_text = [line.strip() for line in sys_text]
     ref_text = [line.strip() for line in ref_text]
@@ -425,10 +441,19 @@ def correct(ref_text, sys_text, ref_entities, sys_entities, sys_text_corrected, 
         corrections = read_corrections(corrections_tsv)
     correcter = Corrector(should_correct_to_nomintaive_case=to_nominative_case, corrections=corrections)
     corrected_sys_text = []
-    for ref_line, sys_line, ref_marker, sys_marker in zip(ref_text, sys_text, ref_markers, sys_markers):
-        corrected_sys_line = correct_line(ref_line, sys_line, ref_marker, sys_marker, correcter)
+    correct_idxs = []
+    for idx, (ref_line, sys_line, ref_marker, sys_marker) in enumerate(
+        zip(ref_text, sys_text, ref_markers, sys_markers)
+    ):
+        corrected_sys_line, correction_result = correct_line(ref_line, sys_line, ref_marker, sys_marker, correcter)
         corrected_sys_text.append(corrected_sys_line)
+        if correction_result == CorrectionResult.CORRECTED or correction_result == CorrectionResult.WAS_CORRECT:
+            correct_idxs.append(idx)
+
     sys_text_corrected.write("\n".join(corrected_sys_text))
+    if corrections_idxs:
+        with open(corrections_idxs, "w") as f:
+            f.write("\n".join(str(idx) for idx in correct_idxs))
     log.info("Correction statistics")
     log.info(correcter.correction_statistics)
 
