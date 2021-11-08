@@ -241,6 +241,18 @@ def filter_text_by_ner(
         tgt_entities_out.write(" ".join([str(tag) for tag in sent_tgt_entities]) + "\n")
     log.info(f"Filtering done")
 
+@cli.command()
+@click.argument("file_to_filter", type=click.File("r"))
+@click.argument("idx_file", type=click.File("r"))
+@click.argument("filter_result_file", type=click.File("w"))
+def filter_by_idxs(file_to_filter, idx_file, filter_result_file):
+    """Filter the given file to only contain indices defined in the idx file."""
+    log.info(f"Filtering based on indicies")
+    idxs = set(int(line.strip()) for line in idx_file)
+    for idx, line in enumerate(file_to_filter):
+        if idx in idxs:
+            filter_result_file.write(line)
+
 
 @cli.command()
 @click.argument("entities_file", type=click.File("r"))
@@ -420,6 +432,12 @@ def show_examples(ref_text, sys_text, ref_entities, sys_entities, tag):
     default=None,
     help="A filepath to save the line idxs of verified corrected NEs in TGT.",
 )
+@click.option(
+    "--updated_sys_markers",
+    type=str,
+    default=None,
+    help="A filepath to save the updated (due to corrections) SYS NER markers.",
+)
 def correct(
     ref_text,
     sys_text,
@@ -429,6 +447,7 @@ def correct(
     to_nominative_case,
     corrections_tsv,
     corrections_idxs,
+    updated_sys_markers,
 ):
     """Correct the sys_text named entities according to options specified"""
     sys_text = [line.strip() for line in sys_text]
@@ -442,18 +461,26 @@ def correct(
     correcter = Corrector(should_correct_to_nomintaive_case=to_nominative_case, corrections=corrections)
     corrected_sys_text = []
     correct_idxs = []
+    corrected_sys_markers = []
     for idx, (ref_line, sys_line, ref_marker, sys_marker) in enumerate(
         zip(ref_text, sys_text, ref_markers, sys_markers)
     ):
-        corrected_sys_line, correction_result = correct_line(ref_line, sys_line, ref_marker, sys_marker, correcter)
+        corrected_sys_line, updated_sys_marker, correction_result = correct_line(ref_line, sys_line, ref_marker, sys_marker, correcter)
         corrected_sys_text.append(corrected_sys_line)
+        corrected_sys_markers.append(updated_sys_marker)
         if correction_result == CorrectionResult.CORRECTED or correction_result == CorrectionResult.WAS_CORRECT:
             correct_idxs.append(idx)
 
     sys_text_corrected.write("\n".join(corrected_sys_text))
     if corrections_idxs:
+        log.info("Writing indices of correct lines.")
         with open(corrections_idxs, "w") as f:
             f.write("\n".join(str(idx) for idx in correct_idxs))
+    if updated_sys_markers:
+        log.info("Writing updated NER markers for SYS.")
+        with open(updated_sys_markers, "w") as f:
+            for sent_ner_tag in corrected_sys_markers:
+                f.write(" ".join([NERTag.__repr__(tag) for tag in sent_ner_tag]) + "\n")
     log.info("Correction statistics")
     log.info(correcter.correction_statistics)
 

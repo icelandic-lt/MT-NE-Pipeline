@@ -10,5 +10,13 @@ for dataset in $DATASETS; do
     src_entities="$OUT_DIR/$dataset.filtered.$SRC_LANG.ner"
     tgt_entities="$OUT_DIR/$dataset.filtered.$TGT_LANG.ner"
     tgt_text_out="$OUT_DIR/$dataset.filtered.corrected.$TGT_LANG"
-    mt --debug --log_file $OUT_DIR/$dataset.corrections.log correct $src_text $tgt_text $src_entities $tgt_entities $tgt_text_out --to_nominative_case
+    mt --debug --log_file $OUT_DIR/$dataset.corrections.log correct \
+        $src_text \
+        $tgt_text \
+        $src_entities \
+        $tgt_entities \
+        $tgt_text_out \
+        --to_nominative_case \
+        --corrections_idxs $OUT_DIR/$dataset.filtered.correction_idxs.$TGT_LANG \
+        --updated_sys_markers $OUT_DIR/$dataset.filtered.corrected.$TGT_LANG.ner
 done

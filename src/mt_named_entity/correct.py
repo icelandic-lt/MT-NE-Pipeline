@@ -21,7 +21,7 @@ class CorrectionResult(Enum):
     WAS_CORRECT = 3
     CORRECTED = 4
 
-    def merge(self, other):
+    def gain(self, other):
         """Merges two CorrectionResults to a single CorrectionResult"""
         if self.value >= other.value:
             return self
@@ -104,25 +104,34 @@ TGT={tgt_ner_marker.named_entity} -> {correction}."
         If the src_ne was inflected, return the inflected src_ne and CorrectionResult.CORRECTED."""
         # We split the src_ne into words by whitespace and attempt to correct each word.
         original_src_ne = src_ne.split(" ")
+        # We apply a simple heuristic to determine the src_ne gender
+        gender = None
+        if any([w.endswith("son") or w.endswith("sonar") or w.endswith("syni") for w in original_src_ne]):
+            gender = "kk"
+        elif any([w.endswith("dóttir") or w.endswith("dóttur") for w in original_src_ne]):
+            gender = "kvk"
         inflected_src_ne = [
-            self._inflect_using_bin(src_ne_part, case="NF", assume_uppercase=True) for src_ne_part in original_src_ne
+            self._inflect_using_bin(src_ne_part, case="NF", gender=gender, assume_uppercase=True)
+            for src_ne_part in original_src_ne
         ]
         # We merge the lists - using the original words if the inflected word is None.
         merged_correction_result = CorrectionResult.NO_CORRECTION
         result = []
         for src_ne_part, (inflected_src_ne_part, correction_result) in zip(original_src_ne, inflected_src_ne):
-            merged_correction_result = merged_correction_result.merge(correction_result)
+            merged_correction_result = merged_correction_result.gain(correction_result)
             result.append(inflected_src_ne_part if correction_result == CorrectionResult.CORRECTED else src_ne_part)
 
         return " ".join(result), merged_correction_result
 
-    def _inflect_using_bin(self, word: str, case: str = "NF", assume_uppercase=True) -> Tuple[str, CorrectionResult]:
+    def _inflect_using_bin(
+        self, word: str, case: str = "NF", gender=None, assume_uppercase=True
+    ) -> Tuple[str, CorrectionResult]:
         """Inflect the word using BinPackage.
         If no change is applied, return the src_ne and CorrectionResult.NO_CORRECTION.
         If the src_ne is already in nominative case, return the src_ne and CorrectionResult.WAS_CORRECT.
         If the src_ne was inflected, return the inflected src_ne and CorrectionResult.CORRECTED."""
 
-        def get_by_best_einkunn(m: KsnidList) -> KsnidList:
+        def einkunn_pref(m: KsnidList) -> KsnidList:
             # 1 = generally accepted and modern, 0 accepted but old Icelandic, 2 = not fully accepted, etc.
             for einkunn in (1, 0, 2, 3, 4, 5):
                 filtered = [match for match in m if match.einkunn == einkunn]
@@ -131,7 +140,17 @@ TGT={tgt_ner_marker.named_entity} -> {correction}."
             log.warning(f"No einkunn available: {m}")
             return m
 
-        def get_by_best_hluti(m: KsnidList) -> KsnidList:
+        def kyn_pref(m: KsnidList) -> KsnidList:
+            # Do we prefer a gender?
+            if gender is None:
+                return m
+            filtered = [match for match in m if match.ofl == gender]
+            if len(filtered) > 0:
+                return filtered
+            log.warning(f"No einkunn available: {m}")
+            return m
+
+        def hluti_pref(m: KsnidList) -> KsnidList:
             # We prefer to use ism (person name) over föð (paternal name) over örn (place name) and then bær (town name)
             for hluti in ("ism", "föð", "örn", "bær"):
                 filtered = [match for match in m if match.hluti == hluti]
@@ -140,7 +159,7 @@ TGT={tgt_ner_marker.named_entity} -> {correction}."
             log.warning(f"No hluti available: {m}")
             return m
 
-        def get_by_best_malsnid(m: KsnidList) -> KsnidList:
+        def malsnid_pref(m: KsnidList) -> KsnidList:
             # We prefer results with no malsnid.
             for malsnid in ("", "STAD", "GAM", "URE"):
                 filtered = [match for match in m if match.malsnid == malsnid]
@@ -149,7 +168,7 @@ TGT={tgt_ner_marker.named_entity} -> {correction}."
             log.warning(f"No malsnid available: {m}")
             return m
 
-        def get_by_birting(m: KsnidList) -> KsnidList:
+        def birting_pref(m: KsnidList) -> KsnidList:
             # We prefer results with no birting.
             for birting in ("K", "V"):
                 filtered = [match for match in m if match.birting == birting]
@@ -158,7 +177,7 @@ TGT={tgt_ner_marker.named_entity} -> {correction}."
             log.warning(f"No birting available: {m}")
             return m
 
-        def get_by_et(m: KsnidList) -> KsnidList:
+        def tala_pref(m: KsnidList) -> KsnidList:
             # We prefer results which are singular (ET).
             filtered = [match for match in m if "ET" in match.mark]
             if len(filtered) > 0:
@@ -183,7 +202,7 @@ TGT={tgt_ner_marker.named_entity} -> {correction}."
         if len(word_forms) == 1:
             return return_result(word, word_forms.pop())
         # Their forms differ, so we need to do some heuristic filtering to selected the most "accepted one"
-        for f in [get_by_best_hluti, get_by_best_einkunn, get_by_birting, get_by_best_malsnid, get_by_et]:
+        for f in [kyn_pref, hluti_pref, einkunn_pref, birting_pref, malsnid_pref, tala_pref]:
             m = f(m)
             if len(m) == 1:
                 return return_result(word, m[0].bmynd)
@@ -196,7 +215,7 @@ TGT={tgt_ner_marker.named_entity} -> {correction}."
 
 def correct_line(
     src_line: str, tgt_line: str, src_markers: List[NERMarker], tgt_markers: List[NERMarker], corrector: Corrector
-) -> Tuple[str, CorrectionResult]:
+) -> Tuple[str, List[NERMarker], CorrectionResult]:
     """
     Return the corrected tgt_line and the correction result. If no change is applied, return the original tgt_line.
     Corrects the tgt_line by removing wrong entities and replacing them with the correct ones as defined by the Corrector.
@@ -208,11 +227,26 @@ def correct_line(
     corrections = [
         (alignment, corrector(src_line, tgt_line, alignment.marker_1, alignment.marker_2)) for alignment in alignments
     ]
-    # We order the corrections by the alignments' start_idx of the target_markers, descending.
-    # This allows us to correct the target line in the correct order.
-    corrections.sort(key=lambda x: x[0].marker_2.start_idx, reverse=True)
-    # Then we correct the target line by replacing the wrong entities with the correct ones.
+    # We order the corrections by the alignments' start_idx of the target_markers.
+    corrections.sort(key=lambda x: x[0].marker_2.start_idx)
+    total_sys_len_change = 0
+    updated_sys_markers = []
     for alignment, (correction, correction_result) in corrections:
-        tgt_line = tgt_line[: alignment.marker_2.start_idx] + correction + tgt_line[alignment.marker_2.end_idx :]
-        final_correction_result.merge(correction_result)
-    return tgt_line, final_correction_result
+        sys_len_change = len(correction) - len(alignment.marker_2.named_entity)
+        new_start = alignment.marker_2.start_idx + total_sys_len_change
+        new_end = alignment.marker_2.end_idx + total_sys_len_change + sys_len_change
+        # We correct the target line by replacing the wrong entities with the correct ones.
+        tgt_line = tgt_line[: new_start] + correction + tgt_line[new_start + len(alignment.marker_2.named_entity) :]
+        # We create new SYS NERMarkers which are based on the corrected target NEs.
+        updated_sys_markers.append(
+            NERMarker(
+                alignment.marker_2.tag,
+                new_start,
+                new_end,
+                correction,
+            )
+        )
+        total_sys_len_change += sys_len_change
+
+        final_correction_result = final_correction_result.gain(correction_result)
+    return tgt_line, updated_sys_markers, final_correction_result
